@@ -1,0 +1,23 @@
+# Editors and OS cruft
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local configuration. The example and the examples/ directory are tracked.
+/.agentws.yml
+
+# Runtime state. Locks live outside a checkout in normal use, but a test or a
+# local trial can put them here.
+/.agentws/
+*.lock
+
+# Test scratch
+/test/tmp/
+/test/fixtures/proc/
+*.bats.log
+
+# Nothing in this project is built, so there is no build output to ignore.

@@ -1,0 +1,55 @@
+# .agentws.yml - agentws configuration.
+#
+# Discovery order, first hit wins:
+#   1. $AGENTWS_CONFIG (must be an absolute path)
+#   2. ./.agentws.yml, walking up to $HOME
+#   3. $AGENTWS_ROOT/.agentws.yml
+#
+# The parser is a documented strict subset of YAML. Supported: flat "key: value"
+# scalars, "key: [a, b, c]" inline lists, "- item" block lists, and exactly one
+# level of nesting under provider_opts. Anchors, aliases, tabs, multi-line
+# scalars, quoted keys, and nested maps elsewhere are refused with a
+# file:line error. Nothing is ever silently dropped.
+#
+# Placeholders {root} {top} {slot} {user} are expanded in paths and in every
+# provider_opts value. A leading ~/ is expanded to $HOME. root and lock_dir are
+# then canonicalised with pwd -P, so two symlinked paths to one physical
+# checkout cannot produce two different lock files.
+
+version: 1                        # the parser refuses anything other than 1
+
+root: ~/work/myproj               # slots live directly under this directory
+top: myproj                       # project short name, used by slot_name_format
+provider: worktree                # -> providers/worktree.sh
+default_branch: main              # a slot is claimable only when on this branch
+
+# Ordered. claim walks this list front to back and takes the first free slot.
+slots: [0, 1, 2, 3, lab]
+
+# How a slot id becomes a directory name under root. Default: "{slot}_{top}"
+slot_name_format: "{slot}_{top}"  # -> 0_myproj, 1_myproj, ... lab_myproj
+
+reference_slot: "0"               # never branched, never pruned
+exclude_from_claim: ["0", "lab"]  # claim skips these; lock them explicitly
+
+# A lock older than this is stale and can be taken over. On platforms without
+# /proc (macOS, Git Bash) this is the ONLY expiry mechanism, because process
+# liveness cannot be judged there. Recommend 4 on those platforms.
+ttl_hours: 12
+
+# Central lock registry, deliberately outside the workspaces so that cleaning a
+# workspace cannot destroy a lock. Canonicalised at load.
+lock_dir: "{root}/.agentws/locks"
+
+# Read only by the provider. Core code never reads AGENTWS_P_*, and providers
+# never read this file directly.
+provider_opts:
+  source_repo: "{root}/0_myproj"
+  branch_prefix: "agentws/"
+
+# Block-list form is also accepted:
+#
+# slots:
+#   - 0
+#   - 1
+#   - lab

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "agentws": {
+      "command": "$HOME/.local/bin/agentws-mcp",
+      "args": [],
+      "env": {
+        "AGENTWS_CONFIG": "$HOME/.agentws.yml",
+        "AGENTWS_BIN": "$HOME/.local/bin/agentws",
+        "AGENTWS_OWNER_PREFIX": "copilot"
+      }
+    }
+  }
+}

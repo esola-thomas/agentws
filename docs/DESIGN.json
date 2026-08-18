@@ -1,0 +1,261 @@
+{
+  "survey": {
+    "generic": 17,
+    "project_specific": 12,
+    "seams": [
+      {
+        "hook": "slot_path",
+        "signature": "slot_path <slot> -> absolute path on stdout",
+        "purpose": "Sole source of a slot's on-disk location. Absorbs the entire worktree-vs-fullclone layout difference; every git call in core is already git -C \"$path\".",
+        "default_impl": "printf '%s/%s' \"$ROOT\" \"$slot\"  (fullclone provider overrides to $ROOT/<slot>_<top>; worktree provider to $ROOT/.agentws/wt/<slot>)"
+      },
+      {
+        "hook": "slot_create",
+        "signature": "slot_create <slot> <path> -> rc",
+        "purpose": "Materialize a new slot. The one operation where the two providers share nothing.",
+        "default_impl": "worktree: git -C $PRIMARY worktree add -b agentws/<slot> <path> origin/$DEFAULT_BRANCH"
+      },
+      {
+        "hook": "slot_destroy",
+        "signature": "slot_destroy <slot> <path> -> rc",
+        "purpose": "Tear down a slot. Not present in wsctl today, but required: rm -rf on a worktree leaves a stale admin entry in .git/worktrees. Must refuse when the slot is locked or dirty.",
+        "default_impl": "worktree: git worktree remove --force <path> && git worktree prune"
+      },
+      {
+        "hook": "slot_doctor",
+        "signature": "slot_doctor <slot> <path> -> zero or more lines of 'id<TAB>pass|warn|fail|skipped<TAB>detail'",
+        "purpose": "Provider-specific health checks appended to the core's git/upstream checks. Core renders both human and JSON from the same records, so a plugin never touches the JSON emitters.",
+        "default_impl": "emit nothing (worktree provider: no extra checks)"
+      }
+    ]
+  },
+  "ranking": [
+    {
+      "language": "hybrid",
+      "avg": 24.8,
+      "flaw_count": 21
+    },
+    {
+      "language": "bash",
+      "avg": 23.1,
+      "flaw_count": 21
+    },
+    {
+      "language": "python",
+      "avg": 22.4,
+      "flaw_count": 23
+    }
+  ],
+  "top_flaws": [
+    "AGENTWS_OWNER scoping is undefined for a long-lived MCP server. lock_mine (wsctl:246-249) is string equality and cmd_unlock (wsctl:344) releases without --force when it matches. One server process serving two agent sessions shares one owner string, so agent B can silently release agent A's lock via the exposed 'release' tool. This is the two-agents-one-workspace failure, introduced by the new layer.",
+    "AGENTWS_PID provenance is unspecified. cmd_lock records owner_pid/owner_start only for a locally-live pid (wsctl:317-321), and lock_owner_alive judges liveness solely on it (wsctl:204, 215-221). If Python passes the MCP server pid, a server restart makes a live agent's lock read process_dead (wsctl:232) and takeover-able (wsctl:285-289); a surviving server makes a dead agent's lock look alive. The proposal lists AGENTWS_PID in the env handshake and never says whose pid it is.",
+    "Making lock.dir configurable removes an invariant that hardcoded ROOT/LOCK_DIR (wsctl:56,68) provided for free: all callers necessarily agree on where a slot's lock lives. With per-user YAML, '~' expansion, and symlinked roots there is no canonicalization requirement, so two agents can hold two different lock files for one physical checkout.",
+    "MCP surface has no stated policy on non-zero exits or force. cmd_lock returns 1 on BUSY (wsctl:293) and lost-race (wsctl:333); nothing forbids the Python layer from retrying, and nothing forbids exposing a force flag, which would make overriding another agent's lock a machine-callable operation.",
+    "No `agentws init` and no zero-config default: the adopter must hand-author a YAML with slot_naming templates, reference_slot, exclude_from_claim and provider_opts before the tool does anything. 6+ steps to first value.",
+    "The 'bash standalone' guarantee is illusory: the documented config format is YAML and only python/agentws_mcp/config.py can flatten it to the KEY=VALUE form lib/core/config.sh reads. Bash-only users must hand-write .agentws/config.env."
+  ],
+  "spec": {
+    "build_order": [
+      {
+        "deliverable": "A working `agentws lock/unlock/locks` that is a drop-in for the three wsctl commands and shares the lock directory with the existing wsctl, so both run side by side during migration.",
+        "step": "1. Extract the lock engine as a standalone, config-less binary. bin/agentws + lib/core.sh + lib/lock.sh, with ROOT/TOP/SLOTS still hardcoded exactly as wsctl:60-68. Commands: lock, unlock, locks, locks --json. Rename WSCTL_PID -> AGENTWS_PID and WSCTL_OWNER -> AGENTWS_OWNER, honouring old names as fallbacks. Introduce the AGENTWS_PROC seam (defaults to /proc) purely so tests can fake it.",
+        "validation": "Run the full 6-case lock matrix from validation_plan against this binary. Separately, take a lock with wsctl and read it with agentws and vice versa: byte-identical lock files, identical stale_reason. `diff <(wsctl locks --json) <(agentws locks --json)` after normalising the tool name must be empty."
+      },
+      {
+        "deliverable": "Step 1's binary, now project-agnostic, still doing only locking.",
+        "step": "2. Add lib/config.sh and delete the hardcoded constants. .agentws.yml discovery, strict-subset parser, {root}/{top}/{slot} expansion, path canonicalisation, `agentws config --json`.",
+        "validation": "`agentws config --json` reproduces every wsctl:60-69 constant exactly. Re-run the 6-case matrix unchanged: it must pass identically, proving config introduction did not touch lock semantics. Point AGENTWS_CONFIG at a second throwaway config and confirm the lock sets are independent. Feed the parser malformed YAML (an anchor, a nested map, a tab) and confirm a loud line-numbered error, not a dropped key."
+      },
+      {
+        "deliverable": "Full read-side parity with wsctl on both a git-worktree repo and a fullclone repo.",
+        "step": "3. Add lib/provider.sh, providers/_contract.sh, providers/worktree.sh, providers/fullclone.sh, lib/slots.sh, and read commands status, free, doctor, all with --json. Core's `[[ -d $d/.git ]]` tests (wsctl:138,283,438,552,579,719) are ALL replaced by provider_slot_exists.",
+        "validation": "On a scratch repo with 3 worktree slots, `agentws status` lists 3 slots: the assertion that the -d/.git bug is dead. On a fullclone repo, diff the normalised JSON of `wsctl status --json` and `agentws status --json`: empty. `agentws free --json` and the claimable field in status agree for all 5 slots."
+      },
+      {
+        "deliverable": "Complete CLI with full wsctl parity plus JSON on every command. wsctl can be retired; this alone is shippable and is the universal-fallback contract in full.",
+        "step": "4. Add claim, sync, prune, create, destroy, and lib/envelope.sh. Every mutating command gains a --json envelope, closing the wsctl:797 gap where claim/lock/unlock/sync/prune/create were --json-unsupported. claim --print-env keeps sq() quoting (wsctl:413-414).",
+        "validation": "Every command under --json passes `jq -e .` and matches its documented envelope shape (test/json_shape.bats). `eval \"$(agentws claim --print-env 'x')\"` sets AGENTWS_SLOT/WS correctly with a reason containing a single quote and a newline. Run a real task end to end using only agentws; wsctl is not invoked once."
+      },
+      {
+        "deliverable": "Project-specific behaviour lives entirely in one ~90-line provider file; core contains zero project-specific knowledge.",
+        "step": "5. Document authoring a custom provider: copy providers/_contract.sh, implement only the hooks that differ, and name it in `provider:` in your config. Ship a small worked example that extends fullclone with a project-specific bootstrap step.",
+        "validation": "`grep -riE 'AGENTWS_P_' bin/ lib/core.sh lib/lock.sh lib/slots.sh lib/envelope.sh` returns nothing: core never reads the provider namespace, so provider knowledge cannot leak into core. A custom provider hook that shells out with a path containing a space and a single quote executes correctly instead of injecting, proving sq() quoting is applied at every provider boundary."
+      },
+      {
+        "deliverable": "Both verified clients driving agentws through 6 tools. Codex/Cursor/Aider explicitly documented as untested.",
+        "step": "6. Add mcp/agentws-mcp and mcp/tools.json: JSON-RPC 2.0 stdio framing, initialize, tools/list, tools/call for the 6 tools, per-session owner scoping, exit trap releasing session-owned locks. Ship share/claude.mcp.json and share/copilot.mcp.json, each verified against its installed client.",
+        "validation": "`claude mcp list` shows agentws connected with exactly 6 tools. Two concurrent client sessions each claim a slot and get DIFFERENT slots; session A's release cannot free session B's lock (returns not_owner). Kill a client session mid-lock, confirm the trap released it; then disable the trap and confirm the lock survives and expires only by TTL, proving the trap is an optimisation, not a correctness dependency."
+      },
+      {
+        "deliverable": "`agentws init` in an arbitrary git repo produces a working .agentws.yml and a usable tool in one command: zero-config first value.",
+        "step": "7. Add cmd_init, docs/LOCKING.md, docs/PROVIDERS.md, install.sh, and the full bats suite wired to run on demand.",
+        "validation": "In a fresh clone with no prior setup: `agentws init && agentws create 1 && agentws claim 'test'` succeeds with no hand-edited config. Full bats suite green on Linux; on a macOS box the suite is green with liveness tests reporting skipped-with-reason, never silently passing."
+      }
+    ],
+    "config_schema": "Discovery order, first hit wins:\n  1. $AGENTWS_CONFIG (absolute path)\n  2. ./.agentws.yml, walking up to $HOME\n  3. $AGENTWS_ROOT/.agentws.yml\nNone found -> exit 3: \"no .agentws.yml found; run: agentws init\".\n\nThe parser is a DOCUMENTED STRICT SUBSET (~60 lines of sed/case). Supported: flat\n`key: value` scalars; `key: [a, b, c]` inline lists; `- item` block lists; exactly one\nlevel of nesting under the single key `provider_opts:`. NOT supported: anchors,\nmulti-line scalars, nested maps elsewhere, quoted keys. Anything unrecognised is a LOUD\nparse error naming file and line, never a silently dropped key. `agentws config --json`\nprints exactly what the parser saw, so the parse is auditable. `~/` is expanded, then\nevery path is canonicalised with `cd \"$p\" && pwd -P`, so two symlinked roots cannot\nproduce two lock dirs for one physical checkout.\n\n# ============================================================================\n# EXAMPLE 1 - a normal GitHub repo, default worktree provider\n# ~/work/myproj/.agentws.yml\n# ============================================================================\nversion: 1                       # parser refuses anything != 1\nroot: ~/work/myproj              # canonicalised at load; slots live under it\ntop: myproj                      # used by slot_name_format\nprovider: worktree               # -> providers/worktree.sh\ndefault_branch: main\nslots: [0, 1, 2, 3, lab]         # ordered; claim walks this list in order\nslot_name_format: \"{slot}_{top}\" # -> 0_myproj, 1_myproj, ... lab_myproj\nreference_slot: \"0\"              # role=reference: never branched, never pruned\nexclude_from_claim: [\"0\", \"lab\"] # dedups wsctl's hardcoded skips at 434-435/519-521/671\nttl_hours: 12\nlock_dir: \"{root}/.agentws/locks\"\nprovider_opts:\n  source_repo: \"{root}/0_myproj\" # the worktree parent\n  branch_prefix: \"agentws/\"\n\n# ---------------------------------------------------------------------------\n# Resulting shell variables (visible via `agentws config --json`):\n#   AGENTWS_ROOT, AGENTWS_TOP, AGENTWS_PROVIDER, AGENTWS_DEFAULT_BRANCH,\n#   AGENTWS_SLOTS (space-separated), AGENTWS_SLOT_NAME_FORMAT,\n#   AGENTWS_REFERENCE_SLOT, AGENTWS_EXCLUDE_FROM_CLAIM (space-separated),\n#   AGENTWS_TTL_HOURS, AGENTWS_LOCK_DIR\n# and, from provider_opts only: AGENTWS_P_project, AGENTWS_P_log_dir, ...\n#\n# Namespace rule, enforced by review and test/provider_contract.bats:\n#   core NEVER reads AGENTWS_P_*;  providers NEVER read the config file directly.\n# There is exactly ONE config parser and ONE config format. No flattened cache file,\n# so there is no cache-invalidation contract to get wrong.",
+    "core_modules": [
+      {
+        "key_functions": [
+          "lock_file (wsctl:168)",
+          "lock_read, sed -n 's/^k=//p' (wsctl:170-175)",
+          "lock_age_hours (wsctl:177-185)",
+          "lock_owner_alive, the ladder, wsctl:201-232, VERBATIM",
+          "lock_stale_reason (wsctl:235-243)",
+          "lock_is_stale (wsctl:245-247)",
+          "lock_active (wsctl:249-253)",
+          "lock_mine (wsctl:255-258)",
+          "lock_guard (wsctl:260-274)",
+          "cmd_lock, noclobber acquisition (wsctl:276-341)",
+          "cmd_unlock (wsctl:343-353)",
+          "cmd_locks (wsctl:355-399)"
+        ],
+        "path": "lib/lock.sh",
+        "responsibility": "The entire locking system, lifted from wsctl 166-353 with zero logic changes. Only mechanical edits permitted (LOCK_DIR -> AGENTWS_LOCK_DIR, ${TOP} -> $(slot_name), WSCTL_PID -> AGENTWS_PID, /proc -> ${AGENTWS_PROC:-/proc}). This file is the reason the project is bash."
+      },
+      {
+        "key_functions": [
+          "jstr (wsctl:93-100)",
+          "jnum (wsctl:102-105)",
+          "jbool (wsctl:107)",
+          "sq (wsctl:110-112)",
+          "jjoin (wsctl:115-121)",
+          "c_red/c_grn/c_yel/c_dim, JSON-safe (wsctl:78-84)",
+          "run",
+          "confirm",
+          "die"
+        ],
+        "path": "lib/core.sh",
+        "responsibility": "Escaping, colour, and process primitives. Keeps the jq-with-sed-fallback design (wsctl:90-100) so the core has no hard dependency."
+      },
+      {
+        "key_functions": [
+          "config_find",
+          "config_parse",
+          "config_expand ({root}/{top}/{slot}/{user})",
+          "config_canon (pwd -P)",
+          "cmd_config --json"
+        ],
+        "path": "lib/config.sh",
+        "responsibility": "The single config parser. Strict-subset YAML to AGENTWS_* and AGENTWS_P_*. Canonicalises every path. Loud error on unrecognised syntax."
+      },
+      {
+        "key_functions": [
+          "slot_name",
+          "slot_list",
+          "slot_role (reference|lab|work)",
+          "slot_claimable, one implementation shared by claim and status (wsctl:498-503)",
+          "json_slot_obj (wsctl:463-510)"
+        ],
+        "path": "lib/slots.sh",
+        "responsibility": "Slot naming, enumeration, role assignment, and the shared per-slot JSON object so status and free can never drift, which is why wsctl:463 exists."
+      },
+      {
+        "key_functions": [
+          "provider_load",
+          "provider_assert_api",
+          "provider_dispatch"
+        ],
+        "path": "lib/provider.sh",
+        "responsibility": "Sources providers/_contract.sh defaults, then providers/$AGENTWS_PROVIDER.sh over them, then asserts provider_api_version = 1. Registers provider_commands into the dispatcher via a case, not an associative array (bash 3.2)."
+      },
+      {
+        "key_functions": [
+          "emit_result <json-body>",
+          "emit_error <code> <msg>"
+        ],
+        "path": "lib/envelope.sh",
+        "responsibility": "Closes the wsctl:797 gap where claim/lock/unlock had no --json form. Every command emits exactly one JSON line on stdout under --json; human narrative always to stderr. Maps error codes to stable exit codes."
+      },
+      {
+        "key_functions": [
+          "cmd_claim (wsctl:401-458)",
+          "claim --print-env with sq quoting (wsctl:411-415)",
+          "claim --json envelope"
+        ],
+        "path": "lib/cmd_claim.sh",
+        "responsibility": "Walk AGENTWS_SLOTS in order, skip exclude_from_claim, take the first slot that is unlocked, clean, and on the default branch. Uses slot_claimable so status can never disagree."
+      },
+      {
+        "key_functions": [
+          "rpc_read (Content-Length framing)",
+          "rpc_reply",
+          "tools_list",
+          "tools_call -> exec agentws --json --owner \"$SESSION_OWNER\"",
+          "session_owner_init",
+          "on_exit_release"
+        ],
+        "path": "mcp/agentws-mcp",
+        "responsibility": "Optional bash+jq JSON-RPC 2.0 stdio server. Handles initialize, tools/list, tools/call, nothing else. Owns per-session owner scoping and session-end release. Never opens a lock file, /proc, or git; every action is one exec of agentws --json."
+      }
+    ],
+    "decision": "Pure bash (bash 3.2 compatible), single-language: a dependency-free `agentws` core carrying the wsctl lock ladder verbatim, sourced provider scripts implementing a 7-function contract, and an optional ~200-line bash+jq MCP stdio server that shells the same `agentws --json` ABI every other client uses.",
+    "decision_rationale": "The hybrid won on average score but every one of its fatal flaws is caused by the Python layer, not by anything bash failed at. Three are unrecoverable on this host: (1) the environment is pinned to Python 3.7 (CLAUDE.md §7.3, LD_LIBRARY_PATH=/home/noncad/python/3.7.3/lib) while the MCP SDK needs 3.10+, so the flagship layer does not run, and hand-rolling JSON-RPC framing was the sole justification for adding Python at all, which means the same framing work in bash costs the same and adds no second runtime; (2) two config parsers, YAML in Python and a flattened KEY=VALUE cache in bash, with no invalidation contract, while the proposal simultaneously guarantees bash-standalone operation, so the divergent path is exercised on purpose, structurally the same stale-proxy bug the wsctl:310-315 comment exists to prevent; (3) packaging is wholly unspecified while MCP is the entire user-facing value, so every user hits an undefined step. Against that, the hybrid's real wins are all language-neutral and are grafted in below: never reimplement the lock ladder, keep lock_dir on the existing path across the rename, exactly one subprocess call site, slot_exists as a provider hook rather than a core `-d $d/.git` test, exclude_from_claim as config. From the runner-up I take the AGENTWS_PROC test seam, the AGENTWS_P_* provider namespace with core-supplied hook defaults, and provider_commands as a space-separated string rather than the hybrid's invented agentws_register_command, which implies bash 4 associative arrays and breaks the macOS target. The bash core also runs unmodified on a bare farm node where no interpreter is guaranteed, which matters because `agentws locks` is exactly what you want to call from inside a dispatched job. Cost accepted: MCP in bash+jq means hand-writing Content-Length framing and 6 schemas as here-doc JSON, roughly 200 lines written once, and jq becomes a dependency only on the MCP path while the core keeps the sed fallback at wsctl:96-98. No hedge: there is no Python in this project.",
+    "explicit_nongoals": [
+      "No forge API integration of any kind. agentws never talks to GitHub, Azure DevOps, or GitLab: no PR creation, no issue reading, no status checks, no tokens, no PAT storage. `gh` and the ADO MCP server already do this, and adding it would make agentws hold credentials, turning a lock manager into a security surface.",
+      "No CI/CD. No GitHub Actions workflow, no pipeline YAML, no release automation, no version bumping, no changelog generation. Tests are bats you run on demand. A CI matrix for a bash script that manages local directories is cost with no payer, and golden-file suites break on cosmetic field additions.",
+      "No GUI, no TUI, no curses dashboard, no watch mode, no progress bars, no spinners, no colour beyond the four helpers at wsctl:78-84. `agentws status` prints a table and exits.",
+      "No daemon, no background process, no server, no socket, no port, no persistent state beyond the lock files. The MCP server is a stdio child of the client and dies with it. Any design needing something running when no user is running it is the wrong design for this tool.",
+      "No multi-user authentication or authorisation. Locks are advisory and cooperative: the owner field is whatever string the caller supplies. agentws assumes a single trusted UID on a single machine. It is not a defence against a malicious actor and must never be described as one.",
+      "No distributed or network locking. No etcd, no Redis, no flock over NFS, no lease renewal protocol. One file created with noclobber; the cross-host case is handled by refusing to judge (wsctl:210-212), not by coordinating.",
+      "No build, test, or regression orchestration. agentws does not submit farm jobs, does not know what a testsuite is. verify.sh stays a separate tool.",
+      "No git operations beyond fetch, fast-forward, branch listing, and branch deletion. No commit, push, merge, rebase, stash, or conflict resolution. agentws reports a slot is dirty; it never cleans it.",
+      "No config migration tooling, no wsctl-to-agentws converter, no compatibility shim beyond honouring WSCTL_OWNER/WSCTL_PID as fallback env names.",
+      "No plugin discovery, no provider registry, no downloading providers. A provider is a .sh file the user places in providers/ and names in config. There is no marketplace.",
+      "No Python, no Node, no Go, no compiled component, nothing published to PyPI or npm. install.sh makes two symlinks.",
+      "No telemetry, no usage analytics, no crash reporting, no phoning home."
+    ],
+    "integration_matrix": "VERIFIED INSTALLED ON THIS HOST. Both take MCP JSON config; both get a tested drop-in\nfragment shipped in share/.\n\n1) Claude Code — add to ~/.claude.json, or .mcp.json at the project root for a\n   project-scoped server. share/claude.mcp.json:\n\n   {\n     \"mcpServers\": {\n       \"agentws\": {\n         \"command\": \"/home/esolathomas/.local/bin/agentws-mcp\",\n         \"args\": [],\n         \"env\": {\n           \"AGENTWS_CONFIG\": \"/home/u/agentws/.agentws.yml\",\n           \"AGENTWS_OWNER_PREFIX\": \"claude\",\n           \"AGENTWS_BIN\": \"/home/esolathomas/.local/bin/agentws\"\n         }\n       }\n     }\n   }\n\n   Verify:  claude mcp list          # expect: agentws  connected\n   Smoke:   have the agent call workspace_status, cross-check against\n            `agentws status --json | jq .` in a terminal. They must agree field for\n            field, because they are the same exec.\n\n2) Copilot CLI — identical server, identical schemas, same JSON shape under the\n   wrapper key that build_order step 6 pins by reading the installed binary's own docs\n   rather than guessing. share/copilot.mcp.json:\n\n   {\n     \"mcpServers\": {\n       \"agentws\": {\n         \"command\": \"/home/esolathomas/.local/bin/agentws-mcp\",\n         \"env\": { \"AGENTWS_CONFIG\": \"/home/u/agentws/.agentws.yml\",\n                  \"AGENTWS_OWNER_PREFIX\": \"copilot\" }\n       }\n     }\n   }\n\n   Verify by listing tools in the client and confirming exactly 6 appear.\n\nNOT TESTABLE HERE, stated plainly rather than claimed:\n\n   Codex CLI, Cursor, Aider, Windsurf, Continue, Zed. None is installed on this host.\n   Their config schema, transport support, and whether they load stdio servers at all\n   are UNVERIFIED. Do not ship config fragments for them as if tested. If a user reports\n   one works, add the fragment then, recording the client version.\n\nUNIVERSAL FALLBACK. This is the contract; every integration above is a thin wrapper over\nit. Any tool that can run a shell command uses agentws today with no MCP support:\n\n   agentws status --json\n   agentws claim --json \"fp legality migration\"      # -> {\"ok\":true,\"data\":{\"path\":...}}\n   eval \"$(agentws claim --print-env 'fp legality migration')\"   # sets AGENTWS_SLOT, WS\n   agentws locks --json | jq -e '.data.locks[] | select(.stale)'\n   agentws release 2 --json\n   agentws doctor 1 --json\n\n   Guarantees:\n     - stdout under --json is exactly one line of valid JSON, always.\n     - human narrative and progress go to stderr, always, including cmd_lock output when\n       invoked via claim (wsctl:401-406 already does this).\n     - stable exit codes: 0 ok, 1 refused (busy / not owner / no free slot),\n       2 usage error, 3 config error, 4 provider error.\n   Nothing in the design is reachable only through MCP.",
+    "layout": "agentws/\n├── bin/\n│   └── agentws                  # arg parse + dispatcher only (~130 lines, wsctl 776-815)\n├── lib/\n│   ├── core.sh                  # colours (wsctl 78-84), jstr/jnum/jbool/jjoin/sq (88-125),\n│   │                            #   run/confirm/die (142-157), json_unsupported (121-124)\n│   ├── config.sh                # strict-subset YAML reader -> AGENTWS_* / AGENTWS_P_*\n│   ├── lock.sh                  # LIFTED VERBATIM from wsctl 166-353\n│   ├── slots.sh                 # slot_name, slot_list, slot_role, json_slot_obj (463-510)\n│   ├── envelope.sh              # emit_result / emit_error: one JSON line + exit code\n│   ├── provider.sh              # loader; installs defaults for unimplemented hooks\n│   ├── cmd_status.sh            # wsctl 512-570\n│   ├── cmd_free.sh              # wsctl 667-704\n│   ├── cmd_claim.sh             # wsctl 401-458, + --json envelope (797 gap closed)\n│   ├── cmd_lock.sh              # lock/unlock/locks wrappers + --json envelopes\n│   ├── cmd_sync.sh              # wsctl 573-601\n│   ├── cmd_prune.sh             # wsctl 604-616\n│   ├── cmd_create.sh            # -> provider_slot_create\n│   ├── cmd_doctor.sh            # core checks + provider_slot_doctor hook\n│   └── cmd_init.sh              # writes a starter .agentws.yml by probing the cwd repo\n├── providers/\n│   ├── worktree.sh              # DEFAULT: git worktree add per slot\n│   └── fullclone.sh             # git clone per slot\n├── mcp/\n│   ├── agentws-mcp              # bash+jq JSON-RPC stdio server (~200 lines, optional)\n│   └── tools.json               # the 6 tool schemas, emitted verbatim on tools/list\n├── share/\n│   ├── claude.mcp.json          # drop-in fragment for ~/.claude.json\n│   └── copilot.mcp.json         # same shape, different wrapper key\n├── test/\n│   ├── lock_liveness.bats       # /proc faked via the AGENTWS_PROC seam\n│   ├── lock_race.bats           # 20-way concurrent noclobber acquisition\n│   ├── lock_matrix.bats         # the 6-case matrix, see validation_plan\n│   ├── provider_contract.bats\n│   └── json_shape.bats          # every --json command parses under `jq -e .`\n├── docs/\n│   ├── PROVIDERS.md\n│   └── LOCKING.md               # the invariants, in prose, for future maintainers\n└── install.sh                   # symlinks bin/agentws and mcp/agentws-mcp; no build step\n\nBoundary, one direction only:\n\n  MCP client (Claude Code / Copilot CLI)\n        |  JSON-RPC over stdio\n        v\n  mcp/agentws-mcp        framing + schemas + owner scoping. NEVER opens a lock file.\n        |  exec: agentws --json --owner \"$SESSION_OWNER\" <cmd>\n        v\n  bin/agentws            locks, git, slot policy. The stable ABI.\n        |  source\n        v\n  providers/{worktree,fullclone}.sh\n                         may NOT read or write $AGENTWS_LOCK_DIR. Locking is core-only.",
+    "mcp_tools": [
+      {
+        "args": "{} (no arguments)",
+        "name": "workspace_status",
+        "returns": "{\"ok\":true,\"data\":{\"liveness_supported\":bool,\"slots\":[{slot,name,path,role,branch,dirty,ahead,behind,claimable,warnings[],lock:{owner,reason,age_hours,host,stale,stale_reason,mine}|null}]}}",
+        "why_a_tool": "The one read an agent must do before touching anything, and the one whose answer changes underneath it mid-task. Merges what were three separate wsctl commands (status, free, locks) into one schema, because their outputs are subsets of the same per-slot object, which is exactly why wsctl:463 json_ws_obj exists. Three schemas' worth of information for one schema's token cost."
+      },
+      {
+        "args": "{\"reason\": string (required, free text describing the task)}",
+        "name": "workspace_claim",
+        "returns": "{\"ok\":true,\"data\":{\"slot\",\"name\",\"path\",\"owner\",\"reason\"}} or {\"ok\":false,\"error\":{\"code\":\"no_free_slot\"}}",
+        "why_a_tool": "The acquisition step. Without it the agent cannot legally begin work, and it cannot be done out of band because the returned path is what the agent must cd into. Deliberately has NO slot argument: an agent picking its own slot is how two agents reason their way into one checkout."
+      },
+      {
+        "args": "{\"slot\": string (required), \"reason\": string (required)}",
+        "name": "workspace_lock",
+        "returns": "same shape as workspace_claim, or {\"ok\":false,\"error\":{\"code\":\"busy\",\"owner\":..,\"reason\":..,\"age_hours\":..}}",
+        "why_a_tool": "claim cannot express 'I need slot 2 specifically', which is the case whenever work continues on an existing branch, i.e. day two of any task. Exposes no force parameter at all; see the force policy in validation_plan."
+      },
+      {
+        "args": "{\"slot\": string (required)}",
+        "name": "workspace_release",
+        "returns": "{\"ok\":true,\"data\":{\"slot\",\"released\":true}} or {\"ok\":false,\"error\":{\"code\":\"not_owner\",\"owner\":..}}",
+        "why_a_tool": "A held lock blocks the next agent for the full TTL. Release must be callable at the moment the agent knows it is finished, which is mid-session, from a context that has no shell. Also exposes no force parameter."
+      },
+      {
+        "args": "{\"slot\": string (optional; all slots if omitted)}",
+        "name": "workspace_sync",
+        "returns": "{\"ok\":true,\"data\":{\"synced\":[{slot,fetched,fast_forwarded,skipped_reason}]}}",
+        "why_a_tool": "Sync-before-analyze is a standing rule (CLAUDE.md §3.4) and the failure it prevents, a full root-cause analysis run against a day-old clone, is silent and expensive. It has to be reachable at the start of a task, in session. Respects lock_guard (wsctl:260-274), so slots held by others are skipped, not stomped."
+      },
+      {
+        "args": "{\"slot\": string (required)}",
+        "name": "workspace_doctor",
+        "returns": "{\"ok\":true,\"data\":{\"slot\",\"healthy\":bool,\"checks\":[{level:\"OK|WARN|FAIL\",check,detail}]}}",
+        "why_a_tool": "Answers 'is this workspace broken, or is my change broken?', the question that otherwise burns hours mid-task. It is the preflight discipline of CLAUDE.md §2.1 made callable. Provider-specific depth comes from provider_slot_doctor, so the schema stays fixed across projects. Also the surface that reports liveness_supported:false on platforms with no /proc."
+      }
+    ],
+    "open_risks": [
+      "MCP JSON-RPC framing in bash is the riskiest component. Reading Content-Length headers and a body of exact byte length needs `read -r -N`, which is bash 4.1+, breaking the 3.2 target for the MCP server specifically (the core is unaffected). Mitigation: assert the version at server startup with a clear message and document CLI-3.2 / server-4.1. A macOS user must brew-install a newer bash to run the server.",
+      "Binary-safe reads in bash are hard: a tool argument containing a NUL or an unusual multibyte sequence can desynchronise the framing loop and wedge the server. Mitigation: jq parses the body, and any parse failure returns a JSON-RPC error and resynchronises rather than exiting. A fuzz test feeding malformed frames is on the list but this is the least-proven part of the design.",
+      "The macOS TTL-only degradation is safe but poor. A user whose agent is killed waits up to ttl_hours. If macOS becomes a real target rather than a portability claim, the honest fix is a small compiled helper reading proc_pidinfo, which contradicts the no-compiled-component nongoal. That trade must be reopened deliberately, not smuggled in.",
+      "The strict-subset YAML parser will eventually reject a config a user believes is valid YAML. The loud-error design makes that a good failure rather than a silent one, but it is friction, and the temptation to grow the parser toward real YAML must be resisted or it becomes the largest and buggiest file in the project.",
+      "The provider contract is enforced by convention and provider_contract.bats, not by the language. A provider missing provider_api_version is caught; one whose slot_doctor prints the wrong format, or that quietly touches $AGENTWS_LOCK_DIR, is not caught until it misbehaves. The suite tests the three shipped providers; a user's fourth is unpoliced.",
+      "Session-owner scoping assumes the MCP server process is per-session. If a client ever shares one server process across concurrent sessions, $$ is identical for both and the two-agents-one-lock hole reopens. The server cannot detect this from the inside. Mitigation is documentation plus a doctor check that flags more than one active lock sharing an owner string.",
+      "Retiring wsctl before build step 4 completes would leave the workflow without claim/sync/prune. The coexistence window (steps 1-4) is safe only because both tools write identical lock files; any divergence in the lock file FORMAT during that window, however small, breaks mutual exclusion silently. The format is frozen until wsctl is deleted.",
+      "`agentws init` probing an arbitrary repo guesses slot_name_format, default_branch, and reference_slot. A wrong guess produces a config that works but manages the wrong directories. init must print the generated config, require confirmation before writing, and refuse to overwrite an existing .agentws.yml."
+    ],
+    "portability": "LINUX (primary, the only fully-featured platform). /proc present, so the full liveness\nladder including pid start-time reuse detection (wsctl:224-231, /proc/<pid>/stat field 22)\nis active. Everything below is degradation from this baseline, always in the safe\ndirection.\n\nmacOS — THE HONEST STATEMENT. There is no /proc on macOS. wsctl:222\n(`[[ -d /proc ]] || return 0`) therefore returns \"alive\" unconditionally, which means:\n  - process-death detection NEVER fires. A lock whose owner was killed is held for the\n    full ttl_hours.\n  - PID START-TIME REUSE DETECTION IS IMPOSSIBLE. There is no portable way to read a\n    process start time on macOS from bash without parsing `ps -o lstart=`, whose format\n    is locale-dependent and second-granular, and therefore useless as a reuse\n    discriminator: two processes can share a pid and a start second. I am NOT\n    implementing a ps-based substitute. A wrong liveness answer is worse than none.\n  - net effect: on macOS agentws is a TTL-ONLY lock. Strictly safe (it never frees a\n    live lock) and strictly less convenient (dead agents pin slots until TTL).\n  This must not be silent. So:\n    * `agentws doctor` emits: `WARN liveness no /proc on this platform; locks expire by\n      TTL only (ttl_hours=12). To reclaim early: agentws unlock <slot> --force`\n    * `agentws locks --json` carries \"liveness_supported\": false at the top level, and\n      every lock object carries it too.\n    * `agentws lock` prints the same one-line warning to stderr on first use per day.\n  Recommended macOS config: ttl_hours: 4, not 12.\n\nbash 3.2 (macOS system bash) is the core's floor. Concretely:\n  - NO associative arrays anywhere. The dispatcher is a `case`; provider_commands returns\n    a space-separated string parsed by `case`. This is why the hybrid's invented\n    agentws_register_command is not adopted.\n  - NO ${var,,} / ${var^^}; use tr. NO mapfile/readarray; use while-read.\n  - Under `set -u`, \"${arr[@]}\" on an EMPTY array is an error in 3.2. wsctl:359 declares\n    `objs=()` and dereferences it as \"${objs[@]+\"${objs[@]}\"}\" (wsctl:397). That guard\n    form is correct and is MANDATORY on every array expansion in the codebase. A grep for\n    `\\[@\\]` not `+`-guarded is a review rule, and json_shape.bats runs the empty-lock-dir\n    case that trips it.\n  - bin/agentws asserts ${BASH_VERSINFO[0]} -ge 3 and dies clearly on anything older, and\n    specifically detects being run under sh/dash.\n  EXCEPTION: mcp/agentws-mcp requires bash 4.1+ for `read -r -N` framing, asserted at\n  startup. A macOS user gets the full CLI on system bash and needs a newer bash only for\n  the MCP server. Stated limitation, not papered over.\n\nWINDOWS. Not supported natively; there is no cmd.exe or PowerShell path. Under WSL2 it is\nLinux and fully featured, including /proc: the recommended and only supported route. Under\nGit Bash / MSYS2 it mostly runs but has no /proc, so it degrades exactly as macOS does and\nreports liveness_supported:false; `set -o noclobber` atomicity on an NTFS mount is\nunverified, so Git Bash is best-effort, not supported. Documented as such.\n\nCROSS-HOST, independent of OS. If the lock's recorded `host` differs from the current\n`hostname -s`, or either is empty, liveness is unknowable and the lock is treated as ALIVE\n(wsctl:210-212). This matters most on shared filesystems, where locks taken on this host\nare readable from LSF farm nodes over NFS: a farm job running `agentws locks` sees\nthe lock and correctly refuses to judge it dead.\n\nDEPENDENCIES. Core: bash, git, coreutils, sed, awk. jq is OPTIONAL for the core (jstr\nfalls back to sed escaping, wsctl:96-98) and REQUIRED only for mcp/agentws-mcp. No\ncompiler, no package manager, no interpreter beyond bash. install.sh is two symlinks.",
+    "provider_base": "#!/usr/bin/env bash\n# ===========================================================================\n# providers/_contract.sh - Provider API v1. Loaded by lib/provider.sh, which\n# installs each of these as the default, then sources the selected provider on\n# top. A provider implements only what differs.\n#\n# Function classes, enforced by convention and test/provider_contract.bats:\n#   VALUE     - writes exactly one line to stdout, diagnostics to stderr, rc 0\n#   PREDICATE - prints nothing, rc 0/1\n#   ACTION    - may print freely, rc is the result\n# No hook may `cd`, `exit`, or assign to any AGENTWS_* variable.\n# No hook may read or write $AGENTWS_LOCK_DIR. Locking is core-only.\n# provider_slot_destroy is called ONLY after core verified lock_mine or --force.\n# Providers read ONLY the AGENTWS_P_* namespace, never the config file.\n# ===========================================================================\n\nprovider_api_version() { printf '1'; }     # VALUE. Required. Core dies on mismatch.\n\n# VALUE: absolute path of a slot. Renders AGENTWS_SLOT_NAME_FORMAT.\nprovider_slot_path() { printf '%s/%s' \"$AGENTWS_ROOT\" \"$(slot_name \"$1\")\"; }\n\n# PREDICATE: is a usable checkout present?\n# -e, NOT -d. In a git worktree, .git is a FILE. wsctl's `[[ -d \"$d/.git\" ]]` at\n# lines 138, 283, 438, 552, 579 and 719 would report ZERO slots under the default\n# provider. This is the single most important reason slot existence is a hook and\n# not an inline test in core.\nprovider_slot_exists() { [[ -e \"$(provider_slot_path \"$1\")/.git\" ]]; }\n\nprovider_slot_create()  { die \"provider '$AGENTWS_PROVIDER' cannot create slots\"; }\nprovider_slot_destroy() { die \"provider '$AGENTWS_PROVIDER' cannot destroy slots\"; }\n\n# ACTION: per-slot health. Print \"OK|WARN|FAIL <check> <detail>\" lines. rc 0 = healthy.\nprovider_slot_doctor()  { printf 'OK checkout %s\\n' \"$2\"; }\n\n# VALUE: space-separated extra subcommand names (NOT an associative array: bash 3.2).\n# Core dispatches `agentws <name>` to provider_cmd_<name> and never branches on\n# provider identity to find them.\nprovider_commands()     { printf ''; }\n\n# ACTION: extra `export K=V` lines appended to `agentws claim --print-env`.\nprovider_claim_env()    { :; }\n\n\n# ===========================================================================\n# providers/worktree.sh - DEFAULT provider. Slots are git worktrees of one\n# parent clone. Cheap, fast, correct for ordinary repos.\n# ===========================================================================\nprovider_api_version() { printf '1'; }\n\nprovider_slot_exists() { [[ -e \"$(provider_slot_path \"$1\")/.git\" ]]; }\n\nprovider_slot_create() {                        # $1 slot, $2 abs path\n  local slot=\"$1\" d=\"$2\" src br\n  src=\"${AGENTWS_P_source_repo:-$(provider_slot_path \"$AGENTWS_REFERENCE_SLOT\")}\"\n  [[ -e \"$d\" ]]        && die \"$d already exists\"\n  [[ -e \"$src/.git\" ]] || die \"source repo $src not found\"\n  br=\"${AGENTWS_P_branch_prefix:-agentws/}slot-${slot}\"\n  if [[ \"$slot\" == \"$AGENTWS_REFERENCE_SLOT\" ]]; then\n    run git -C \"$src\" worktree add \"$d\" \"$AGENTWS_DEFAULT_BRANCH\"\n  else\n    run git -C \"$src\" worktree add -b \"$br\" \"$d\" \"origin/$AGENTWS_DEFAULT_BRANCH\"\n  fi\n}\n\nprovider_slot_destroy() {                       # core already checked the lock\n  local src\n  src=\"${AGENTWS_P_source_repo:-$(provider_slot_path \"$AGENTWS_REFERENCE_SLOT\")}\"\n  run git -C \"$src\" worktree remove \"$2\"\n}\n\nprovider_slot_doctor() {\n  local d=\"$2\" cd_\n  if [[ -e \"$d/.git\" ]]; then printf 'OK git checkout at %s\\n' \"$d\"\n  else printf 'FAIL git no checkout at %s\\n' \"$d\"; return 1; fi\n  cd_=\"$(git -C \"$d\" rev-parse --git-common-dir 2>/dev/null || true)\"\n  if [[ -n \"$cd_\" ]]; then printf 'OK worktree common dir %s\\n' \"$cd_\"\n  else printf 'FAIL worktree common dir unresolvable\\n'; return 1; fi\n  if git -C \"$d\" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1\n    then printf 'OK upstream tracking configured\\n'\n    else printf 'WARN upstream no upstream branch\\n'; fi\n  return 0\n}\n\n\n# ===========================================================================\n# providers/fullclone.sh - independent clone per slot. Required wherever the\n# toolchain needs untracked per-slot state a worktree cannot carry.\n# ===========================================================================\nprovider_api_version() { printf '1'; }\nprovider_slot_exists() { [[ -d \"$(provider_slot_path \"$1\")/.git\" ]]; }   # real clone: -d\nprovider_slot_create() {\n  local d=\"$2\" src=\"${AGENTWS_P_source_repo:?fullclone needs provider_opts.source_repo}\"\n  [[ -e \"$d\" ]] && die \"$d already exists\"\n  run git clone --branch \"$AGENTWS_DEFAULT_BRANCH\" \"$src\" \"$d\"\n}\nprovider_slot_destroy() { run rm -rf -- \"$2\"; }   # explicit path, never a glob\nprovider_slot_doctor()  {\n  if [[ -d \"$2/.git\" ]]; then printf 'OK git clone at %s\\n' \"$2\"\n  else printf 'FAIL git no clone at %s\\n' \"$2\"; return 1; fi\n}\n",
+    "validation_plan": "LOCK SAFETY IS THE ONLY THING THAT CANNOT REGRESS. Defended five ways.\n\nA. PRESERVATION BY CONSTRUCTION.\n   lib/lock.sh is wsctl:166-353 copied byte for byte. The only permitted edits are\n   mechanical: LOCK_DIR->AGENTWS_LOCK_DIR, LOCK_TTL_HOURS->AGENTWS_TTL_HOURS,\n   ${slot}_${TOP}->$(slot_name \"$slot\"), WSCTL_PID->AGENTWS_PID,\n   /proc->${AGENTWS_PROC:-/proc}. The review gate is literal:\n   `diff <(sed -n '166,353p' wsctl) lib/lock.sh` must show ONLY those substitutions;\n   any other hunk is rejected. Invariants preserved, restated so a future maintainer\n   cannot erode them by accident:\n     1. lock_owner_alive returns 0 (ALIVE) for every uncertain case. Exit 1 means\n        DEFINITIVELY dead. A false \"dead\" puts two agents in one checkout; a false\n        \"alive\" costs at most ttl_hours of waiting. The asymmetry is deliberate\n        (wsctl:196-199).\n     2. The plain `pid=` field (wsctl:326) is FORENSICS ONLY and is never consulted by\n        liveness. It is the short-lived agentws process, already exited; testing it\n        would mark every lock dead. This is the wsctl:310-315 trap and the single\n        highest-value comment in the file.\n     3. owner_pid/owner_start are written ONLY when the caller exports AGENTWS_PID AND\n        ${AGENTWS_PROC}/$AGENTWS_PID exists at lock time (wsctl:317-321). Absent that,\n        the lock falls back to TTL expiry. There is no other liveness source.\n     4. Acquisition is `( set -o noclobber; printf ... > \"$f\" )` (wsctl:327). The\n        subshell keeps noclobber from leaking. The race loser gets rc 1 and a message\n        naming the current holder (wsctl:333-337). Never replaced by test-then-write.\n     5. Locks live outside the workspaces (wsctl:165) so `trash out import scratch` or\n        `git clean` cannot destroy them.\n\nB. THE 6-CASE MATRIX (test/lock_matrix.bats). /proc is faked through AGENTWS_PROC, so\n   every case is deterministic and sub-second. The expected verdict is stated as\n   alive/dead, because that, not the message text, is what safety rests on.\n     1. Same host, owner_pid live, owner_start matches\n        -> ALIVE. lock_active true, stale_reason \"\". A different owner gets BUSY rc 1.\n     2. Same host, owner_pid absent from /proc\n        -> DEAD. stale_reason \"process_dead\". Takeover permitted with the NOTE at\n           wsctl:284-287.\n     3. Same host, owner_pid present but owner_start DIFFERS (pid reused)\n        -> DEAD. stale_reason \"process_dead\". This is wsctl:226-230, the case a naive\n           rewrite silently loses.\n     4. Different host recorded, or host field empty\n        -> ALIVE regardless of pid state, even when that pid is absent locally\n           (wsctl:210-212). The test also asserts the local /proc is NOT read.\n     5. No owner_pid recorded (caller never exported AGENTWS_PID)\n        -> ALIVE while age < ttl; stale_reason \"ttl\" once age >= ttl (wsctl:239-242).\n           Both sides of the boundary are run by rewriting the epoch= field.\n     6. AGENTWS_PROC points at a nonexistent directory (macOS / Git Bash / MSYS2)\n        -> ALIVE always, whatever the pid (wsctl:222). The test also asserts\n           `agentws locks --json` reports liveness_supported:false and that doctor\n           emits the WARN, so the degradation is never silent.\n   Each case is additionally crossed with --ignore-pid (forces alive, wsctl:203) and\n   with age above/below ttl. lock_race.bats separately spawns 20 concurrent\n   `agentws lock 1` processes and asserts exactly one rc 0, nineteen rc 1, and one\n   well-formed lock file.\n\nC. FORCE POLICY, closing the machine-callable-override hole.\n   --force exists on the CLI only, for a human who has confirmed an agent is gone.\n   mcp/agentws-mcp NEVER passes --force, NEVER exposes a force parameter in any of the\n   6 schemas, and NEVER retries on rc 1. A busy lock returns to the model as a\n   structured refusal {\"ok\":false,\"error\":{\"code\":\"busy\",\"owner\":..,\"reason\":..,\n   \"age_hours\":..}} with rc 1 mapped to an MCP tool error, so the model reports the\n   block instead of grinding at it. Enforced by a test that greps the server for\n   `force` and by a stub `agentws` that fails the test if invoked twice for one\n   tools/call.\n\nD. OWNER SCOPING AND SESSION TEARDOWN, the specific hybrid failure, fixed.\n   lock_mine (wsctl:255-258) is string equality on the owner field and cmd_unlock\n   (wsctl:345-350) releases without --force when it matches. One server process serving\n   two sessions under one owner string would therefore let session B free session A's\n   lock. So the server derives a per-session owner at initialize:\n       SESSION_OWNER=\"${AGENTWS_OWNER_PREFIX:-mcp}:$(hostname -s):$$:$(date +%s | tail -c 6)\"\n   and passes it as --owner on every exec. Two sessions can never collide and the value\n   is stable for the session's life.\n   AGENTWS_PID PROVENANCE, which the hybrid left undefined: the server exports\n   AGENTWS_PID=$$, its OWN pid. This is correct precisely because that same $$ is inside\n   SESSION_OWNER. A server restart yields a new owner string as well as a new pid, so\n   old locks are attributable to a genuinely dead process and correctly read\n   process_dead; a surviving server cannot make another session's dead lock look alive,\n   because it does not share the owner string. There is no shared liveness token.\n   A `trap ... EXIT` releases session-owned locks on clean shutdown. This is an\n   OPTIMISATION ONLY and is tested to be non-load-bearing (build step 6): a SIGKILLed\n   server runs no trap, and correctness must fall back to the ladder plus TTL."
+  }
+}

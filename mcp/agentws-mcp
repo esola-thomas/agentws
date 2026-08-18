@@ -1,0 +1,438 @@
+#!/usr/bin/env bash
+# agentws-mcp - JSON-RPC 2.0 stdio server exposing agentws to MCP clients.
+#
+# This server owns no logic. Every tool shells out to the same
+# `agentws <cmd> --json` ABI a human uses at the terminal, and returns that
+# envelope verbatim. If the CLI and this server ever disagree, this file is
+# wrong.
+#
+# Three rules this file exists to enforce:
+#
+#  1. Owner scoping. One server process can serve several agent sessions.
+#     Every tool call carries a required `session` string and the lock owner
+#     is derived from it, so two sessions never share an owner string.
+#     workspace_release re-reads the lock and refuses unless the recorded
+#     owner is exactly this session's owner.
+#  2. Pid provenance. AGENTWS_PID is unset for every child invocation, so the
+#     server's own pid is never recorded as owner_pid. A server restart must
+#     not make live locks look process_dead. Locks taken over MCP expire by
+#     TTL only. A caller that wants pid liveness passes its own session pid in
+#     `session_pid`, which is the only way owner_pid is ever written.
+#  3. No force. No tool takes a force flag and no BUSY result is retried.
+#     Stealing another agent's lock stays a human CLI action.
+#
+# Framing: Content-Length headers (LSP style) are read when present, and a
+# bare one-JSON-object-per-line stream is accepted otherwise. Replies use the
+# same framing the peer used for its last request.
+
+set -uo pipefail
+
+if [ -z "${BASH_VERSION:-}" ]; then
+  printf 'agentws-mcp: requires bash, not sh/dash.\n' >&2
+  exit 1
+fi
+# read -r -N is bash 4.1. The agentws core floor is 3.2; this server is not.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] ||
+   { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; then
+  printf 'agentws-mcp: bash 4.1 or newer required (read -r -N framing), found %s.\n' "$BASH_VERSION" >&2
+  printf 'agentws-mcp: the agentws CLI itself still runs on bash 3.2; use it directly.\n' >&2
+  exit 1
+fi
+
+command -v jq >/dev/null 2>&1 || { printf 'agentws-mcp: jq not found on PATH\n' >&2; exit 1; }
+
+SERVER_NAME="agentws-mcp"
+SERVER_VERSION="1.0.0"
+PROTOCOL_VERSION="2024-11-05"
+
+MCP_SELF="${BASH_SOURCE[0]}"
+while [ -L "$MCP_SELF" ]; do
+  MCP_LINK="$(readlink "$MCP_SELF")"
+  case "$MCP_LINK" in
+    /*) MCP_SELF="$MCP_LINK" ;;
+    *)  MCP_SELF="$(dirname "$MCP_SELF")/$MCP_LINK" ;;
+  esac
+done
+MCP_DIR="$(cd "$(dirname "$MCP_SELF")" && pwd -P)"
+
+AGENTWS_BIN="${AGENTWS_BIN:-}"
+if [ -z "$AGENTWS_BIN" ]; then
+  if [ -x "$MCP_DIR/../bin/agentws" ]; then
+    AGENTWS_BIN="$(cd "$MCP_DIR/.." && pwd -P)/bin/agentws"
+  else
+    AGENTWS_BIN="$(command -v agentws 2>/dev/null || true)"
+  fi
+fi
+[ -n "$AGENTWS_BIN" ] && [ -x "$AGENTWS_BIN" ] || {
+  printf 'agentws-mcp: agentws not found. Set AGENTWS_BIN to its absolute path.\n' >&2
+  exit 1
+}
+
+OWNER_PREFIX="${AGENTWS_OWNER_PREFIX:-mcp}"
+FRAMED=1
+
+log() { printf '%s: %s\n' "$SERVER_NAME" "$*" >&2; }
+
+# --------------------------------------------------------------- session map
+# Bash 3.2 style parallel arrays, no associative arrays: entry i is
+# "<session>\t<slot>\t<owner>". Used only by the exit trap.
+HELD=()
+
+held_add() { # held_add <session> <slot> <owner>
+  local e
+  for e in "${HELD[@]+"${HELD[@]}"}"; do
+    [ "$e" = "$(printf '%s\t%s\t%s' "$1" "$2" "$3")" ] && return 0
+  done
+  HELD+=("$(printf '%s\t%s\t%s' "$1" "$2" "$3")")
+}
+
+held_drop() { # held_drop <session> <slot>
+  local e keep=() want
+  want="$(printf '%s\t%s\t' "$1" "$2")"
+  for e in "${HELD[@]+"${HELD[@]}"}"; do
+    case "$e" in "$want"*) continue ;; esac
+    keep+=("$e")
+  done
+  HELD=("${keep[@]+"${keep[@]}"}")
+}
+
+# Best-effort cleanup. This is an optimisation only: a lock that survives the
+# trap is still correct, it just waits out its TTL.
+on_exit() {
+  local e sess slot owner
+  for e in "${HELD[@]+"${HELD[@]}"}"; do
+    sess="${e%%	*}"; slot="${e#*	}"; owner="${slot#*	}"; slot="${slot%%	*}"
+    log "releasing $slot held by session $sess"
+    ws_call "$owner" "" unlock "$slot" --json >/dev/null 2>&1 || true
+  done
+}
+trap on_exit EXIT
+
+# ------------------------------------------------------------------ CLI call
+# Run agentws with a scoped owner. AGENTWS_PID / WSCTL_PID are cleared so the
+# server pid can never become owner_pid; a caller-supplied session pid is the
+# only source of one.
+# ws_call collects the CLI's stdout into WS_OUT and its stderr into WS_ERR, so
+# a failure that happens before the envelope is printed (bad config, missing
+# root) still reaches the caller with its cause instead of a bare "no output".
+# Both go through temp files rather than command substitution, which would run
+# in a subshell and drop the variables.
+WS_OUT=""
+WS_ERR=""
+ws_call() { # ws_call <owner> <session_pid> <args...>
+  local owner="$1" spid="$2"; shift 2
+  local -a pre
+  local errf outf rc
+  pre=(env -u AGENTWS_PID -u WSCTL_PID -u AGENTWS_OWNER -u WSCTL_OWNER)
+  if [ -n "$spid" ]; then
+    pre+=("AGENTWS_PID=$spid")
+  fi
+  WS_OUT=""; WS_ERR=""
+  errf="$(mktemp "${TMPDIR:-/tmp}/agentws-mcp.XXXXXX")" || return 1
+  outf="$(mktemp "${TMPDIR:-/tmp}/agentws-mcp.XXXXXX")" || { rm -f "$errf"; return 1; }
+  "${pre[@]+"${pre[@]}"}" "$AGENTWS_BIN" --owner "$owner" "$@" >"$outf" 2>"$errf"
+  rc=$?
+  WS_OUT="$(cat "$outf")"
+  # Literal ESC via printf: BSD sed does not decode hex escapes.
+  WS_ERR="$(sed -e "s/$(printf '\033')\\[[0-9;]*m//g" "$errf" | grep -v '^[[:space:]]*$' | tail -3 | tr '\n' ' ')"
+  rm -f "$errf" "$outf"
+  return $rc
+}
+
+owner_for() { printf '%s:%s' "$OWNER_PREFIX" "$1"; }
+
+# ------------------------------------------------------------------- framing
+send() { # send <json>
+  local body="$1"
+  if [ "$FRAMED" -eq 1 ]; then
+    printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
+  else
+    printf '%s\n' "$body"
+  fi
+}
+
+# Read one message into MSG. Returns 1 on EOF.
+read_message() {
+  local line len=0 saw_header=0
+  MSG=""
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    case "$line" in
+      Content-Length:*|content-length:*)
+        len="${line#*:}"; len="${len// /}"; saw_header=1; continue ;;
+      "")
+        [ "$saw_header" -eq 1 ] && break
+        continue ;;
+      *)
+        case "$line" in
+          '{'*)
+            # Bare line-delimited JSON, no headers.
+            FRAMED=0; MSG="$line"; return 0 ;;
+          *) continue ;;
+        esac ;;
+    esac
+  done
+  [ "$saw_header" -eq 1 ] || return 1
+  FRAMED=1
+  case "$len" in ''|*[!0-9]*) return 1 ;; esac
+  read -r -N "$len" MSG || return 1
+  return 0
+}
+
+# ------------------------------------------------------------------ replies
+reply_result() { # reply_result <id-json> <result-json>
+  send "$(jq -cn --argjson id "$1" --argjson r "$2" \
+    '{jsonrpc:"2.0",id:$id,result:$r}')"
+}
+
+reply_error() { # reply_error <id-json> <code> <message>
+  send "$(jq -cn --argjson id "$1" --argjson c "$2" --arg m "$3" \
+    '{jsonrpc:"2.0",id:$id,error:{code:$c,message:$m}}')"
+}
+
+# A tool outcome: envelope text back to the model, isError when the envelope
+# says ok:false. The model sees the exact same JSON the CLI prints.
+reply_tool() { # reply_tool <id-json> <envelope-json-text> <is_error 0|1>
+  local iserr=false
+  [ "$3" = "1" ] && iserr=true
+  reply_result "$1" "$(jq -cn --arg t "$2" --argjson e "$iserr" \
+    '{content:[{type:"text",text:$t}],isError:$e}')"
+}
+
+# ------------------------------------------------------------------- schemas
+# Kept deliberately small: 6 tools, every property load-bearing. Each schema is
+# paid for in every session of every user.
+tools_json() {
+  cat <<'JSON'
+[
+ {"name":"workspace_status",
+  "description":"List every workspace slot with branch, dirty count, ahead/behind, lock holder and whether it is claimable. Read-only. Call this before claiming.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string","description":"Stable identifier for this agent session. Use the same value for every call in the session. Lock ownership is scoped to it."}},
+   "required":["session"]}},
+
+ {"name":"workspace_claim",
+  "description":"Lock the first free workspace slot and return its path. Fails with no_free_slot rather than waiting or taking someone else's slot.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string","description":"Stable identifier for this agent session."},
+    "reason":{"type":"string","description":"Short free text describing the task, shown to other agents."},
+    "session_pid":{"type":"integer","description":"Optional pid of this session's long-lived process. When given, the lock is released as soon as that process dies instead of waiting out the TTL. Never pass the pid of a shell you spawned for one command."}},
+   "required":["session","reason"]}},
+
+ {"name":"workspace_lock",
+  "description":"Lock one named slot. Returns busy if another owner holds it; that is final, do not retry and do not ask for a force option, there is none.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string","description":"Stable identifier for this agent session."},
+    "slot":{"type":"string","description":"Slot id or workspace name from workspace_status."},
+    "reason":{"type":"string","description":"Short free text describing the task."},
+    "session_pid":{"type":"integer","description":"Optional pid of this session's long-lived process."}},
+   "required":["session","slot","reason"]}},
+
+ {"name":"workspace_release",
+  "description":"Release a lock this session took. Refuses with not_owner if the lock belongs to any other session.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string","description":"Stable identifier for this agent session, matching the one used to lock."},
+    "slot":{"type":"string","description":"Slot id or workspace name."}},
+   "required":["session","slot"]}},
+
+ {"name":"workspace_sync",
+  "description":"Fetch and prune in one slot, or all slots when slot is omitted. Fast-forwards only the read-only reference slot; never merges into a work slot.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string","description":"Stable identifier for this agent session."},
+    "slot":{"type":"string","description":"Optional slot id or workspace name. All slots if omitted."}},
+   "required":["session"]}},
+
+ {"name":"workspace_doctor",
+  "description":"Run health checks on one slot: checkout present, branch resolvable, upstream set, plus provider checks. Read-only.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string","description":"Stable identifier for this agent session."},
+    "slot":{"type":"string","description":"Slot id or workspace name."}},
+   "required":["session"]}}
+]
+JSON
+}
+
+# --------------------------------------------------------------------- tools
+# tool_call sets TOOL_OUT (the envelope) and TOOL_ERR (0 ok, 1 failed).
+# It assigns rather than printing: a command substitution would run the body in
+# a subshell and lose both TOOL_ERR and the HELD session map.
+TOOL_OUT=""
+TOOL_ERR=0
+
+env_failed() { # env_failed <envelope>
+  [ "$(printf '%s' "$1" | jq -r 'if .ok then "0" else "1" end' 2>/dev/null || echo 1)" = "1" ]
+}
+
+err_envelope() { # err_envelope <command> <code> <message>
+  jq -cn --arg c "$1" --arg code "$2" --arg m "$3" \
+    '{ok:false,command:$c,data:null,error:{code:$code,message:$m}}'
+}
+
+fail_tool() { # fail_tool <command> <code> <message>
+  TOOL_ERR=1
+  TOOL_OUT="$(err_envelope "$1" "$2" "$3")"
+}
+
+# Look up the recorded owner of a slot's lock, empty when unlocked.
+lock_owner_of() { # lock_owner_of <owner> <slot>
+  ws_call "$1" "" locks --json || true
+  printf '%s' "$WS_OUT" |
+    jq -r --arg s "$2" '.data.locks[]? | select(.slot==$s or .name==$s) | .owner' 2>/dev/null | head -1
+}
+
+tool_call() { # tool_call <name> <arguments-json>
+  local name="$1" args="$2" sess spid slot reason owner held
+  TOOL_ERR=0; TOOL_OUT=""
+
+  sess="$(printf '%s' "$args" | jq -r '.session // empty')"
+  if [ -z "$sess" ]; then
+    fail_tool "$name" EUSAGE "session is required: pass a stable identifier for this agent session so lock ownership can be scoped to it"
+    return 0
+  fi
+  owner="$(owner_for "$sess")"
+
+  spid="$(printf '%s' "$args" | jq -r '.session_pid // empty')"
+  case "$spid" in *[!0-9]*) spid="" ;; esac
+
+  slot="$(printf '%s' "$args" | jq -r '.slot // empty')"
+  reason="$(printf '%s' "$args" | jq -r '.reason // empty')"
+
+  case "$name" in
+    workspace_status)
+      ws_call "$owner" "" status --json || true ;;
+
+    workspace_claim)
+      if [ -z "$reason" ]; then
+        fail_tool "$name" EUSAGE "reason is required"; return 0
+      fi
+      ws_call "$owner" "$spid" claim --json "$reason" || true
+      if ! env_failed "$WS_OUT"; then
+        held_add "$sess" "$(printf '%s' "$WS_OUT" | jq -r '.data.slot // empty')" "$owner"
+      fi ;;
+
+    workspace_lock)
+      if [ -z "$slot" ] || [ -z "$reason" ]; then
+        fail_tool "$name" EUSAGE "slot and reason are required"; return 0
+      fi
+      ws_call "$owner" "$spid" lock --json "$slot" "$reason" || true
+      if ! env_failed "$WS_OUT"; then
+        held_add "$sess" "$(printf '%s' "$WS_OUT" | jq -r '.data.slot // empty')" "$owner"
+      fi ;;
+
+    workspace_release)
+      if [ -z "$slot" ]; then
+        fail_tool "$name" EUSAGE "slot is required"; return 0
+      fi
+      # Checked here as well as in the CLI. The CLI compares against whatever
+      # --owner it was handed; this compares against the owner derived from the
+      # caller's own session, which is what stops session B releasing session
+      # A's lock through one shared server process.
+      held="$(lock_owner_of "$owner" "$slot")"
+      if [ -n "$held" ] && [ "$held" != "$owner" ]; then
+        TOOL_ERR=1
+        TOOL_OUT="$(jq -cn --arg c "$name" --arg s "$slot" --arg o "$held" --arg me "$owner" \
+          '{ok:false,command:$c,data:null,
+            error:{code:"not_owner",
+                   message:("slot " + $s + " is held by " + $o + ", not by this session (" + $me + "). Leave it alone."),
+                   owner:$o}}')"
+        return 0
+      fi
+      ws_call "$owner" "" unlock --json "$slot" || true
+      if ! env_failed "$WS_OUT"; then held_drop "$sess" "$slot"; fi ;;
+
+    workspace_sync)
+      if [ -n "$slot" ]; then
+        ws_call "$owner" "" sync --json "$slot" || true
+      else
+        ws_call "$owner" "" sync --json || true
+      fi ;;
+
+    workspace_doctor)
+      if [ -n "$slot" ]; then
+        ws_call "$owner" "" doctor --json "$slot" || true
+      else
+        ws_call "$owner" "" doctor --json || true
+      fi ;;
+
+    *)
+      fail_tool "$name" ENOTFOUND "unknown tool $name"; return 0 ;;
+  esac
+
+  if [ -z "$WS_OUT" ]; then
+    fail_tool "$name" EFAIL "${WS_ERR:-agentws produced no output}"
+    return 0
+  fi
+  if ! printf '%s' "$WS_OUT" | jq -e . >/dev/null 2>&1; then
+    fail_tool "$name" EFAIL "agentws produced non-JSON output: ${WS_ERR:-none}"
+    return 0
+  fi
+  TOOL_OUT="$WS_OUT"
+  env_failed "$TOOL_OUT" && TOOL_ERR=1
+  return 0
+}
+
+# -------------------------------------------------------------------- server
+INITIALIZED=0
+
+handle() { # handle <message>
+  local msg="$1" method id params name args
+  method="$(printf '%s' "$msg" | jq -r '.method // empty')"
+  id="$(printf '%s' "$msg" | jq -c '.id // null')"
+  params="$(printf '%s' "$msg" | jq -c '.params // {}')"
+
+  # Notification: no id, no reply.
+  if [ "$id" = "null" ]; then
+    case "$method" in
+      notifications/initialized|initialized) INITIALIZED=1 ;;
+    esac
+    return 0
+  fi
+
+  case "$method" in
+    initialize)
+      reply_result "$id" "$(jq -cn \
+        --arg pv "$PROTOCOL_VERSION" --arg n "$SERVER_NAME" --arg v "$SERVER_VERSION" \
+        '{protocolVersion:$pv,capabilities:{tools:{listChanged:false}},
+          serverInfo:{name:$n,version:$v},
+          instructions:"Coordinates isolated git workspaces between agents. Pass the same session string on every call. A busy lock is final: never retry it and never ask a human to force it on your behalf."}')"
+      ;;
+    tools/list)
+      reply_result "$id" "$(jq -cn --argjson t "$(tools_json)" '{tools:$t}')"
+      ;;
+    tools/call)
+      name="$(printf '%s' "$params" | jq -r '.name // empty')"
+      args="$(printf '%s' "$params" | jq -c '.arguments // {}')"
+      if [ -z "$name" ]; then
+        reply_error "$id" -32602 "tools/call requires params.name"
+        return 0
+      fi
+      tool_call "$name" "$args"
+      reply_tool "$id" "$TOOL_OUT" "$TOOL_ERR"
+      ;;
+    ping)
+      reply_result "$id" '{}' ;;
+    resources/list)
+      reply_result "$id" '{"resources":[]}' ;;
+    prompts/list)
+      reply_result "$id" '{"prompts":[]}' ;;
+    shutdown)
+      reply_result "$id" '{}'; return 1 ;;
+    *)
+      reply_error "$id" -32601 "method not found: $method" ;;
+  esac
+  return 0
+}
+
+log "serving via $AGENTWS_BIN (owner prefix $OWNER_PREFIX)"
+
+MSG=""
+while read_message; do
+  [ -n "$MSG" ] || continue
+  if ! printf '%s' "$MSG" | jq -e . >/dev/null 2>&1; then
+    send "$(jq -cn '{jsonrpc:"2.0",id:null,error:{code:-32700,message:"parse error"}}')"
+    continue
+  fi
+  handle "$MSG" || break
+done
+
+exit 0

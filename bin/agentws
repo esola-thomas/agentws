@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# agentws - coordinate AI coding agents across isolated git workspaces.
+#
+# Usage:
+#   agentws status                 all slots: branch, dirty, lock, claimable
+#   agentws free                   which slots are idle
+#   agentws claim "reason"         lock the first claimable slot, print its path
+#   agentws lock <slot> "reason"   lock a specific slot
+#   agentws unlock <slot>          release your own lock
+#   agentws locks                  show all locks and their age
+#   agentws sync [slot...]         fetch + prune; fast-forward the reference slot
+#   agentws prune [slot...]        delete merged local branches, after listing them
+#   agentws create <slot>          create a slot via the provider
+#   agentws destroy <slot>         remove a slot via the provider
+#   agentws doctor [slot...]       health checks, core plus provider
+#   agentws config                 show the resolved configuration
+#   agentws init [path]            write a starter .agentws.yml
+#
+# Every command supports --json. Output is one envelope line on stdout:
+#   {"ok":bool,"command":str,"data":object|null,"error":null|{"code","message"}}
+# Human narrative always goes to stderr under --json.
+#
+# Lock liveness: export AGENTWS_PID=$$ (the long-lived session pid) before
+# taking a lock and it is recorded as owner_pid/owner_start. The lock then goes
+# stale the moment that process dies, instead of waiting out the TTL. Without
+# AGENTWS_PID the lock expires by TTL only. The plain pid= field is the agentws
+# process itself and is never used for liveness - it has already exited.
+# Legacy WSCTL_PID / WSCTL_OWNER are honoured as fallbacks.
+#
+# Options: --dry-run     print what would happen, change nothing
+#          --yes         skip confirmation on destructive actions
+#          --owner ID    identity to lock as (default: $AGENTWS_OWNER, else user@host:pid)
+#          --ttl H       lock lifetime in hours (default from config)
+#          --force       act on a locked workspace anyway
+#          --json        machine-readable output
+#          --print-env   claim: emit shell assignments for eval
+#          --ignore-pid  disable process-liveness checks, use TTL only
+#          --config PATH use this .agentws.yml
+
+set -uo pipefail
+
+if [ -z "${BASH_VERSION:-}" ]; then
+  printf 'agentws: this requires bash, not sh/dash. Run: bash agentws ...\n' >&2
+  exit 1
+fi
+if [ "${BASH_VERSINFO[0]}" -lt 3 ]; then
+  printf 'agentws: bash 3.2 or newer required, found %s\n' "$BASH_VERSION" >&2
+  exit 1
+fi
+if [ "${BASH_VERSINFO[0]}" -eq 3 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; then
+  printf 'agentws: bash 3.2 or newer required, found %s\n' "$BASH_VERSION" >&2
+  exit 1
+fi
+
+AGENTWS_SELF="${BASH_SOURCE[0]}"
+while [ -L "$AGENTWS_SELF" ]; do
+  AGENTWS_LINK="$(readlink "$AGENTWS_SELF")"
+  case "$AGENTWS_LINK" in
+    /*) AGENTWS_SELF="$AGENTWS_LINK" ;;
+    *)  AGENTWS_SELF="$(dirname "$AGENTWS_SELF")/$AGENTWS_LINK" ;;
+  esac
+done
+AGENTWS_BIN_DIR="$(cd "$(dirname "$AGENTWS_SELF")" && pwd -P)"
+AGENTWS_LIB_DIR="$(cd "$AGENTWS_BIN_DIR/../lib" && pwd -P)"
+
+DRY=0
+ASSUME_YES=0
+FORCE=0
+JSON=0
+IGNORE_PID=0
+PRINT_ENV=0
+
+# shellcheck source=../lib/core.sh
+. "$AGENTWS_LIB_DIR/core.sh"
+# shellcheck source=../lib/config.sh
+. "$AGENTWS_LIB_DIR/config.sh"
+# shellcheck source=../lib/lock.sh
+. "$AGENTWS_LIB_DIR/lock.sh"
+# shellcheck source=../lib/provider.sh
+. "$AGENTWS_LIB_DIR/provider.sh"
+# shellcheck source=../lib/slots.sh
+. "$AGENTWS_LIB_DIR/slots.sh"
+# shellcheck source=../lib/envelope.sh
+. "$AGENTWS_LIB_DIR/envelope.sh"
+# shellcheck source=../lib/commands.sh
+. "$AGENTWS_LIB_DIR/commands.sh"
+
+OWNER="${AGENTWS_OWNER:-${WSCTL_OWNER:-${USER}@$(hostname -s 2>/dev/null || echo host):$$}}"
+TTL_OVERRIDE="${AGENTWS_TTL:-${WSCTL_TTL:-}}"
+
+usage() { sed -n '2,38p' "$AGENTWS_SELF" | sed 's/^# \?//'; }
+
+# init runs before config_load: it exists precisely because there is no config.
+cmd_init() { # cmd_init [dir]
+  local dir="${1:-$(pwd -P)}" f top root
+  case "$dir" in /*) ;; *) dir="$(pwd -P)/$dir" ;; esac
+  [ -d "$dir" ] || die "not a directory: $dir"
+  dir="$(cd "$dir" && pwd -P)"
+  f="$dir/.agentws.yml"
+  if [ -e "$f" ] && [ "$FORCE" -ne 1 ]; then
+    die "$f already exists (use --force to overwrite)"
+  fi
+  top="$(basename "$dir")"
+  root="$dir"
+  local defbr
+  defbr="$(git -C "$dir" branch --show-current 2>/dev/null || true)"
+  [ -n "$defbr" ] || defbr=main
+  if [ "$DRY" -eq 1 ]; then
+    printf '  [dry-run] write %s\n' "$f"
+    return 0
+  fi
+  cat > "$f" <<EOF
+# agentws configuration. Edit before first use.
+version: 1
+root: $root
+top: $top
+provider: worktree
+default_branch: $defbr
+slots: [1, 2, 3]
+slot_name_format: "{slot}_{top}"
+reference_slot: ""
+exclude_from_claim: []
+ttl_hours: 12
+lock_dir: "{root}/.agentws/locks"
+provider_opts:
+  source_repo: $root
+EOF
+  say "wrote $f"
+  printf '{"path":%s,"top":%s,"root":%s}\n' "$(jstr "$f")" "$(jstr "$top")" "$(jstr "$root")"
+}
+
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)    DRY=1; shift ;;
+    --yes|-y)     ASSUME_YES=1; shift ;;
+    --force)      FORCE=1; shift ;;
+    --json)       JSON=1; shift ;;
+    --ignore-pid) IGNORE_PID=1; shift ;;
+    --print-env)  PRINT_ENV=1; shift ;;
+    --owner)      [ $# -ge 2 ] || die "--owner needs a value"; OWNER="$2"; shift 2 ;;
+    --ttl)        [ $# -ge 2 ] || die "--ttl needs a value"; TTL_OVERRIDE="$2"; shift 2 ;;
+    --config)     [ $# -ge 2 ] || die "--config needs a path"; AGENTWS_CONFIG="$2"; shift 2 ;;
+    -h|--help)    usage; exit 0 ;;
+    *)            ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+# init must run before config_load, which exits 3 when no config exists.
+if [ "${1:-}" = "init" ]; then
+  shift
+  envelope_run init cmd_init "$@"
+  exit $?
+fi
+
+config_load
+
+[ -n "$TTL_OVERRIDE" ] && AGENTWS_TTL_HOURS="$TTL_OVERRIDE"
+case "$AGENTWS_TTL_HOURS" in
+  ''|*[!0-9]*) die "ttl must be a non-negative integer, got '$AGENTWS_TTL_HOURS'" ;;
+esac
+
+[ -d "$AGENTWS_ROOT" ] || die "workspace root $AGENTWS_ROOT does not exist"
+
+provider_load
+
+CMD="${1:-status}"; shift || true
+
+case "$CMD" in
+  status)   envelope_run status  cmd_status  "$@" ;;
+  free)     envelope_run free    cmd_free    "$@" ;;
+  claim)    envelope_run claim   cmd_claim   "$@" ;;
+  sync)     envelope_run sync    cmd_sync    "$@" ;;
+  prune)    envelope_run prune   cmd_prune   "$@" ;;
+  create)   envelope_run create  cmd_create  "$@" ;;
+  destroy)  envelope_run destroy cmd_destroy "$@" ;;
+  doctor)   envelope_run doctor  cmd_doctor  "$@" ;;
+  locks)    envelope_run locks   cmd_locks   "$@" ;;
+  config)   envelope_run config  cmd_config  "$@" ;;
+  lock)
+    if [ "$JSON" -eq 1 ]; then envelope_run lock cmd_lock_json "$@"
+    else cmd_lock "$@"; fi ;;
+  unlock)
+    if [ "$JSON" -eq 1 ]; then envelope_run unlock cmd_unlock_json "$@"
+    else cmd_unlock "$@"; fi ;;
+  ""|help)  usage ;;
+  *)
+    if provider_has_command "$CMD"; then
+      envelope_run "$CMD" provider_run_command "$CMD" "$@"
+    else
+      die "unknown command '$CMD' (try --help)"
+    fi ;;
+esac
