@@ -1,5 +1,5 @@
-# commands.sh - the command surface: status, free, claim, sync, prune, create,
-# destroy, doctor, plus the JSON wrappers for lock/unlock/locks.
+# commands.sh - status, claim, refresh, recycle, environment, maintenance, and
+# lifecycle command implementations.
 #
 # Ported from wsctl: claim 388-428, status 512-570, sync 573-601,
 # prune 604-616, create 640-664, free 667-704, doctor 707-762.
@@ -28,9 +28,9 @@ cmd_status() {
     return 0
   fi
 
-  local d br dirty ab ahead behind note dirty_disp missing_names=""
-  printf '%-16s %-28s %-10s %-7s %s\n' "WORKSPACE" "BRANCH" "DIRTY" "AHEAD" "NOTE"
-  printf '%s\n' "--------------------------------------------------------------------------------"
+  local d br dirty dirty_state env ab ahead behind note dirty_disp missing_names=""
+  printf '%-16s %-28s %-14s %-8s %-7s %s\n' "WORKSPACE" "BRANCH" "DIRTY" "ENV" "AHEAD" "NOTE"
+  printf '%s\n' "------------------------------------------------------------------------------------------------"
   for s in $AGENTWS_SLOTS; do
     if ! provider_slot_exists "$s"; then
       missing_names="${missing_names:+$missing_names }$(slot_name "$s")"
@@ -39,6 +39,8 @@ cmd_status() {
     d="$(provider_slot_path "$s")"
     br="$(slot_branch "$s")"; [ -n "$br" ] || br="?"
     dirty="$(slot_dirty_count "$s")"
+    dirty_state="$(slot_dirty_state "$s")"
+    env="$(slot_env_state "$s")"
     ab="$(slot_ahead_behind "$s")"; ahead="${ab%% *}"; behind="${ab##* }"
     note=""
     [ -z "$(slot_upstream "$s")" ] && note="no upstream"
@@ -51,13 +53,15 @@ cmd_status() {
     [ "$behind" != "0" ] && note="${note:+$note, }${behind} behind"
 
     if lock_active "$s"; then
-      note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner)")"
+      note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), $(lock_remaining_display "$s") left")"
     elif [ -f "$(lock_file "$s")" ]; then
       note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
     fi
 
-    if [ "$dirty" = "0" ]; then dirty_disp="clean"; else dirty_disp="${dirty} files"; fi
-    printf '%-16s %-28s %-10s %-7s %s\n' "$(slot_name "$s")" "$br" "$dirty_disp" "$ahead" "$note"
+    if [ "$dirty_state" = "clean" ]; then dirty_disp="clean"
+    elif [ "$dirty_state" = "phantom-dirty" ]; then dirty_disp="phantom-dirty"
+    else dirty_disp="${dirty} files"; fi
+    printf '%-16s %-28s %-14s %-8s %-7s %s\n' "$(slot_name "$s")" "$br" "$dirty_disp" "$env" "$ahead" "$note"
   done
   [ -n "$missing_names" ] && printf '\n%s\n' "$(c_dim "not created: $missing_names")"
   return 0
@@ -85,18 +89,19 @@ cmd_free() {
     return 0
   fi
 
-  local any=0 br dirty
+  local any=0 br dirty env
   for s in $AGENTWS_SLOTS; do
     provider_slot_exists "$s" || continue
     slot_is_reference "$s" && continue
     br="$(slot_branch "$s")"
     dirty="$(slot_dirty_count "$s")"
+    env="$(slot_env_state "$s")"
     if lock_active "$s"; then
       printf '%s  %-16s locked by %s: %s\n' "$(c_red HELD)" "$(slot_name "$s")" \
         "$(lock_read "$s" owner)" "$(lock_read "$s" reason)"
     elif slot_free "$s"; then
       if slot_claimable "$s"; then
-        printf '%s  %s\n' "$(c_grn FREE)" "$(slot_name "$s")"
+        printf '%s  %-16s env: %s\n' "$(c_grn FREE)" "$(slot_name "$s")" "$env"
       else
         printf '%s  %-16s idle, excluded from claim\n' "$(c_grn FREE)" "$(slot_name "$s")"
       fi
@@ -123,40 +128,244 @@ cmd_free() {
 # eval of empty output is harmless.
 cmd_claim() {
   local reason="${*:-unspecified}"
-  local s d
+  local s d pass env
 
-  for s in $AGENTWS_SLOTS; do
-    slot_claimable "$s" || continue
-    d="$(provider_slot_path "$s")"
+  if [ "${AGENTWS_AUTO_REFRESH:-0}" -eq 1 ]; then
+    for s in $AGENTWS_SLOTS; do
+      [ "$(slot_role "$s")" = "work" ] || continue
+      lock_active "$s" && continue
+      if slot_phantom_base "$s" >/dev/null; then
+        _refresh_slot "$s" auto >/dev/null 2>&1 || true
+      fi
+    done
+  fi
 
-    if [ "${PRINT_ENV:-0}" -eq 1 ] || [ "${JSON:-0}" -eq 1 ]; then
-      cmd_lock "$s" "$reason" >&2 || continue
-    else
-      cmd_lock "$s" "$reason" || continue
-    fi
+  for pass in ready fallback; do
+    [ "$pass" = "fallback" ] && [ "${REQUIRE_ENV:-0}" -eq 1 ] && break
+    for s in $AGENTWS_SLOTS; do
+      slot_claimable "$s" || continue
+      env="$(slot_env_state "$s")"
+      if [ "$pass" = "ready" ]; then
+        [ "$env" = "ready" ] || continue
+      else
+        [ "$env" != "ready" ] || continue
+      fi
+      d="$(provider_slot_path "$s")"
 
-    if [ "${JSON:-0}" -eq 1 ]; then
-      json_slot_obj "$s"
-    elif [ "${PRINT_ENV:-0}" -eq 1 ]; then
-      printf 'export AGENTWS_SLOT=%s\n' "$(sq "$s")"
-      printf 'export AGENTWS_OWNER=%s\n' "$(sq "$OWNER")"
-      printf 'export AGENTWS_WS=%s\n'    "$(sq "$d")"
-      printf 'export WS=%s\n'            "$(sq "$d")"
-      provider_claim_env "$s" "$d"
-    else
-      printf '%s\n' "$d"
-    fi
-    return 0
+      if [ "${PRINT_ENV:-0}" -eq 1 ] || [ "${JSON:-0}" -eq 1 ]; then
+        cmd_lock "$s" "$reason" >&2 || continue
+      else
+        cmd_lock "$s" "$reason" || continue
+      fi
+
+      if [ "${JSON:-0}" -eq 1 ]; then
+        json_slot_obj "$s"
+      elif [ "${PRINT_ENV:-0}" -eq 1 ]; then
+        printf 'export AGENTWS_SLOT=%s\n' "$(sq "$s")"
+        printf 'export AGENTWS_OWNER=%s\n' "$(sq "$OWNER")"
+        printf 'export AGENTWS_WS=%s\n'    "$(sq "$d")"
+        printf 'export WS=%s\n'            "$(sq "$d")"
+        provider_claim_env "$s" "$d"
+      else
+        printf '%s\n' "$d"
+      fi
+      return 0
+    done
   done
 
   if [ "${JSON:-0}" -ne 1 ]; then
-    printf '%s\n' "$(c_red 'no free unlocked slot on the default branch')" >&2
+    if [ "${REQUIRE_ENV:-0}" -eq 1 ]; then
+      printf '%s\n' "$(c_red 'no environment-ready free slot on the default branch')" >&2
+    else
+      printf '%s\n' "$(c_red 'no free unlocked slot on the default branch')" >&2
+    fi
     printf '%s\n' "$(c_dim 'try: agentws status / agentws locks')" >&2
   else
     printf 'no free unlocked slot on the default branch\n' >&2
   fi
   return 5
 }
+
+# -------------------------------------------------------------- environment
+_env_setup_slot() { # _env_setup_slot <slot>
+  local s="$1" d rc=0 state marker
+  d="$(provider_slot_path "$s")"
+  if [ "${JSON:-0}" -eq 1 ]; then
+    provider_env_setup "$s" "$d" >&2 || rc=$?
+  else
+    provider_env_setup "$s" "$d" || rc=$?
+  fi
+  [ "$rc" -eq 0 ] || { printf 'environment setup failed for %s (rc %s)\n' "$(slot_name "$s")" "$rc" >&2; return 7; }
+  state="$(slot_env_state "$s")"
+  [ "$state" = "ready" ] || {
+    printf 'environment check for %s returned %s after setup\n' "$(slot_name "$s")" "$state" >&2
+    return 7
+  }
+  if [ "${DRY:-0}" -ne 1 ]; then
+    marker="$(slot_env_marker "$s")"
+    mkdir -p "$(dirname "$marker")" 2>/dev/null || return 7
+    date +%s > "$marker"
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------ refresh
+REFRESH_STATUS=""
+REFRESH_DETAIL=""
+REFRESH_BASE=""
+
+_refresh_slot() { # _refresh_slot <slot> <manual|auto>
+  local s="$1" mode="${2:-manual}" d state
+  REFRESH_STATUS="refused"; REFRESH_DETAIL=""; REFRESH_BASE=""
+  d="$(provider_slot_path "$s")"
+  provider_slot_exists "$s" || { REFRESH_DETAIL="not created"; return 6; }
+  if lock_active "$s"; then
+    REFRESH_DETAIL="locked by $(lock_read "$s" owner)"
+    return 4
+  fi
+  if [ "$(slot_branch "$s")" != "$AGENTWS_DEFAULT_BRANCH" ]; then
+    REFRESH_DETAIL="not on $AGENTWS_DEFAULT_BRANCH"
+    return 8
+  fi
+  if [ "$mode" = "manual" ]; then
+    if ! run git -C "$d" fetch origin --prune --quiet; then
+      REFRESH_DETAIL="git fetch failed"
+      return 8
+    fi
+  fi
+  state="$(slot_dirty_state "$s")"
+  if [ "$state" = "clean" ]; then
+    REFRESH_STATUS="unchanged"; REFRESH_DETAIL="already clean"
+    return 0
+  fi
+  if [ "$state" != "phantom-dirty" ]; then
+    REFRESH_DETAIL="dirty content is not fully explained by a default-branch advance"
+    return 8
+  fi
+  REFRESH_BASE="$(slot_phantom_base "$s")"
+  if ! run git -C "$d" reset --hard "origin/$AGENTWS_DEFAULT_BRANCH" >/dev/null; then
+    REFRESH_DETAIL="git reset failed"
+    return 8
+  fi
+  if [ "${DRY:-0}" -eq 1 ]; then
+    REFRESH_STATUS="would-refresh"; REFRESH_DETAIL="verified phantom dirt"
+  else
+    REFRESH_STATUS="refreshed"; REFRESH_DETAIL="reset verified phantom dirt to origin/$AGENTWS_DEFAULT_BRANCH"
+  fi
+  return 0
+}
+
+_refresh_rec() { # _refresh_rec <slot>
+  printf '{"slot":%s,"name":%s,"status":%s,"detail":%s,"phantom_base":%s}' \
+    "$(jstr "$1")" "$(jstr "$(slot_name "$1")")" "$(jstr "$REFRESH_STATUS")" \
+    "$(jstr "$REFRESH_DETAIL")" \
+    "$(if [ -n "$REFRESH_BASE" ]; then jstr "$REFRESH_BASE"; else printf 'null'; fi)"
+}
+
+cmd_refresh() {
+  local targets s rc=0 recs=()
+  if [ $# -gt 0 ]; then targets="$(_cmd_resolve_targets "$@")" || return 6
+  else targets="$(slot_list_existing)"; fi
+
+  for s in $targets; do
+    if _refresh_slot "$s" manual; then
+      sayf '%s: %s\n' "$(slot_name "$s")" "$REFRESH_DETAIL"
+    else
+      rc=$?
+      sayf '%s: REFUSE %s\n' "$(slot_name "$s")" "$REFRESH_DETAIL"
+    fi
+    recs+=("$(_refresh_rec "$s")")
+  done
+  if [ "${JSON:-0}" -eq 1 ]; then
+    printf '{"slots":[%s]}' "$(jjoin "${recs[@]+"${recs[@]}"}")"
+  fi
+  return "$rc"
+}
+
+# ------------------------------------------------------------------ recycle
+cmd_recycle() {
+  [ $# -ge 1 ] || { printf 'recycle needs a slot\n' >&2; return 2; }
+  local s d current target delete_branch untracked tracked_dirty=0 deleted="" released=0 rc=0
+  local removed=()
+  s="$(slot_resolve "$1")" || { printf 'unknown slot %s\n' "$1" >&2; return 6; }
+  slot_is_reference "$s" && { printf '%s is the reference slot; refusing to recycle it\n' "$(slot_name "$s")" >&2; return 2; }
+  d="$(provider_slot_path "$s")"
+  provider_slot_exists "$s" || { printf '%s does not exist\n' "$(slot_name "$s")" >&2; return 6; }
+
+  if [ -f "$(lock_file "$s")" ] && ! lock_mine "$s"; then
+    printf '%s is held by %s, not you (%s)\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" >&2
+    return 4
+  fi
+  current="$(slot_branch "$s")"
+  delete_branch="${CLAIM_BRANCH:-$current}"
+  target="origin/$AGENTWS_DEFAULT_BRANCH"
+
+  run git -C "$d" fetch origin --prune --quiet || { printf 'git fetch failed in %s\n' "$d" >&2; return 8; }
+  git -C "$d" rev-parse --verify --quiet "$target" >/dev/null || {
+    printf '%s is unavailable in %s\n' "$target" "$d" >&2; return 8;
+  }
+
+  untracked="$(slot_untracked "$s")"
+  if [ -n "$untracked" ] && [ "${CLEAN_UNTRACKED:-0}" -ne 1 ]; then
+    printf '%s has untracked files; rerun with --clean-untracked to remove them:\n%s\n' \
+      "$(slot_name "$s")" "$untracked" >&2
+    return 8
+  fi
+  if [ -n "$untracked" ]; then
+    while IFS= read -r path; do [ -n "$path" ] && removed+=("$(jstr "$path")"); done <<EOF
+$untracked
+EOF
+    run git -C "$d" clean -fd -- >/dev/null || { printf 'could not clean untracked files in %s\n' "$d" >&2; return 8; }
+  fi
+
+  git -C "$d" diff --quiet --ignore-submodules=none -- 2>/dev/null || tracked_dirty=1
+  git -C "$d" diff --cached --quiet --ignore-submodules=none -- 2>/dev/null || tracked_dirty=1
+  if [ "$tracked_dirty" -eq 1 ] && ! slot_phantom_base "$s" >/dev/null; then
+    printf '%s has tracked changes that recycle will not discard\n' "$(slot_name "$s")" >&2
+    return 8
+  fi
+
+  if [ "$current" = "$AGENTWS_DEFAULT_BRANCH" ]; then
+    if ! git -C "$d" merge-base --is-ancestor HEAD "$target" 2>/dev/null; then
+      printf '%s has default-branch commits not contained in %s\n' "$(slot_name "$s")" "$target" >&2
+      return 8
+    fi
+  fi
+  run git -C "$d" checkout --ignore-other-worktrees -B "$AGENTWS_DEFAULT_BRANCH" "$target" --quiet || {
+    printf 'could not return %s to %s\n' "$(slot_name "$s")" "$AGENTWS_DEFAULT_BRANCH" >&2
+    return 8
+  }
+
+  if [ -n "$delete_branch" ] && [ "$delete_branch" != "$AGENTWS_DEFAULT_BRANCH" ] && \
+     git -C "$d" show-ref --verify --quiet "refs/heads/$delete_branch"; then
+    if run git -C "$d" branch -D -- "$delete_branch" >/dev/null; then
+      deleted="$delete_branch"
+    else
+      printf 'could not delete local branch %s\n' "$delete_branch" >&2
+      rc=8
+    fi
+  fi
+  [ "$rc" -eq 0 ] || return "$rc"
+
+  if [ -f "$(lock_file "$s")" ]; then
+    if [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || return 4
+    else cmd_unlock "$s" || return 4; fi
+    released=1
+  fi
+
+  if [ "${JSON:-0}" -eq 1 ]; then
+    printf '{"slot":%s,"name":%s,"path":%s,"branch":%s,"deleted_branch":%s,"removed_untracked":[%s],"released":%s}' \
+      "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$d")" \
+      "$(jstr "$AGENTWS_DEFAULT_BRANCH")" \
+      "$(if [ -n "$deleted" ]; then jstr "$deleted"; else printf 'null'; fi)" \
+      "$(jjoin "${removed[@]+"${removed[@]}"}")" "$(jbool "$released")"
+  else
+    printf '%s recycled %s on %s\n' "$(c_grn OK)" "$(slot_name "$s")" "$AGENTWS_DEFAULT_BRANCH"
+  fi
+  return 0
+}
+
+cmd_done() { cmd_recycle "$@"; }
 
 # --------------------------------------------------------------------- sync
 # Fetch and prune remote-tracking refs in every slot, then fast-forward the
@@ -364,10 +573,16 @@ cmd_create() {
     return 7
   fi
 
+  if [ "${WITH_ENV:-0}" -eq 1 ]; then
+    sayf 'provisioning environment in %s\n' "$d"
+    _env_setup_slot "$slot" || return $?
+  fi
+
   if [ "${JSON:-0}" -eq 1 ]; then
-    printf '{"slot":%s,"name":%s,"path":%s,"created":%s}' \
+    printf '{"slot":%s,"name":%s,"path":%s,"created":%s,"env":%s}' \
       "$(jstr "$slot")" "$(jstr "$(slot_name "$slot")")" "$(jstr "$d")" \
-      "$(jbool "$(if [ "${DRY:-0}" -eq 1 ]; then echo 0; else echo 1; fi)")"
+      "$(jbool "$(if [ "${DRY:-0}" -eq 1 ]; then echo 0; else echo 1; fi)")" \
+      "$(jstr "$(slot_env_state "$slot")")"
   else
     printf '%s created. Run: agentws doctor %s\n' "$(c_grn OK)" "$slot"
   fi
@@ -435,11 +650,65 @@ cmd_destroy() {
 }
 
 # ------------------------------------------------------------------- doctor
+AUTO_RELEASE_STATUS=""
+AUTO_RELEASE_DETAIL=""
+
+_auto_release_check() { # _auto_release_check <slot>
+  local s="$1" d marker head seen_head seen_epoch now elapsed threshold
+  AUTO_RELEASE_STATUS="skipped"; AUTO_RELEASE_DETAIL="not a finished locked slot"
+  [ "${AGENTWS_AUTO_RELEASE:-0}" -eq 1 ] || return 0
+  marker="$AGENTWS_ROOT/.agentws/activity/$s"
+  if ! lock_active "$s" || [ "$(slot_branch "$s")" != "$AGENTWS_DEFAULT_BRANCH" ] || \
+     [ "$(slot_dirty_count "$s")" != "0" ]; then
+    [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
+    return 0
+  fi
+
+  d="$(provider_slot_path "$s")"
+  head="$(git -C "$d" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$head" ] || return 0
+  seen_head="$(sed -n 's/^head=//p' "$marker" 2>/dev/null | head -1)"
+  seen_epoch="$(sed -n 's/^epoch=//p' "$marker" 2>/dev/null | head -1)"
+  now="$(date +%s)"; threshold=$((AGENTWS_AUTO_RELEASE_MINUTES * 60))
+
+  if [ "$threshold" -eq 0 ]; then
+    if run rm -f "$(lock_file "$s")"; then
+      [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
+      AUTO_RELEASE_STATUS="pass"
+      AUTO_RELEASE_DETAIL="released finished slot after 0 quiet minute(s)"
+    fi
+    return 0
+  fi
+
+  if [ "$seen_head" = "$head" ] && [[ "$seen_epoch" =~ ^[0-9]+$ ]]; then
+    elapsed=$((now - seen_epoch))
+    if [ "$elapsed" -ge "$threshold" ]; then
+      if run rm -f "$(lock_file "$s")"; then
+        [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
+        AUTO_RELEASE_STATUS="pass"
+        AUTO_RELEASE_DETAIL="released finished slot after $AGENTWS_AUTO_RELEASE_MINUTES quiet minute(s)"
+      fi
+      return 0
+    fi
+    AUTO_RELEASE_STATUS="pass"
+    AUTO_RELEASE_DETAIL="finished state observed; release eligible in $(( (threshold - elapsed + 59) / 60 )) minute(s)"
+    return 0
+  fi
+
+  if [ "${DRY:-0}" -ne 1 ]; then
+    mkdir -p "$(dirname "$marker")" 2>/dev/null || return 0
+    printf 'head=%s\nepoch=%s\n' "$head" "$now" > "$marker"
+  fi
+  AUTO_RELEASE_STATUS="pass"
+  AUTO_RELEASE_DETAIL="started finished-state quiet period"
+  return 0
+}
+
 # Core checks first, then the provider's. The provider emits one record per
 # line as "status<TAB>..." or "STATUS check detail"; both forms are normalised
 # by _doctor_norm.
 cmd_doctor() {
-  local targets s d ok line recs objs=() anybad=0
+  local targets s d ok line recs env_state objs=() anybad=0
 
   if [ $# -gt 0 ]; then
     targets="$(_cmd_resolve_targets "$@")" || return 6
@@ -477,6 +746,11 @@ cmd_doctor() {
       recs="$(jjoin "$recs" "$(_doctor_rec worktree warn "$(slot_dirty_count "$s") uncommitted file(s)")")"
     fi
 
+    if [ "${AGENTWS_AUTO_RELEASE:-0}" -eq 1 ]; then
+      _auto_release_check "$s"
+      recs="$(jjoin "$recs" "$(_doctor_rec auto_release "$AUTO_RELEASE_STATUS" "$AUTO_RELEASE_DETAIL")")"
+    fi
+
     if [ -f "$(lock_file "$s")" ]; then
       if lock_is_stale "$s"; then
         recs="$(jjoin "$recs" "$(_doctor_rec lock warn "stale ($(lock_stale_reason "$s")) held by $(lock_read "$s" owner)")")"
@@ -490,6 +764,20 @@ cmd_doctor() {
     if ! lock_liveness_supported; then
       recs="$(jjoin "$recs" "$(_doctor_rec liveness warn "no $AGENTWS_PROC on this platform; locks expire by TTL only (ttl_hours=$AGENTWS_TTL_HOURS). To reclaim early: agentws unlock <slot> --force")")"
     fi
+
+    env_state="$(slot_env_state "$s")"
+    if [ "${FIX_ENV:-0}" -eq 1 ] && [ "$env_state" != "ready" ]; then
+      if lock_guard "$s" "environment repair" >&2; then
+        if _env_setup_slot "$s"; then env_state="ready"
+        else ok=0; env_state="$(slot_env_state "$s")"; fi
+      else
+        recs="$(jjoin "$recs" "$(_doctor_rec env skipped "locked by another owner; environment is $env_state")")"
+      fi
+    fi
+    case "$env_state" in
+      ready) recs="$(jjoin "$recs" "$(_doctor_rec env pass ready)")" ;;
+      *)     recs="$(jjoin "$recs" "$(_doctor_rec env warn "$env_state")")" ;;
+    esac
 
     # Provider checks. stderr is left alone so a provider can narrate.
     while IFS= read -r line; do

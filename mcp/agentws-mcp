@@ -42,7 +42,7 @@ fi
 command -v jq >/dev/null 2>&1 || { printf 'agentws-mcp: jq not found on PATH\n' >&2; exit 1; }
 
 SERVER_NAME="agentws-mcp"
-SERVER_VERSION="1.0.0"
+SERVER_VERSION="2.0.0"
 PROTOCOL_VERSION="2024-11-05"
 
 MCP_SELF="${BASH_SOURCE[0]}"
@@ -200,23 +200,27 @@ reply_tool() { # reply_tool <id-json> <envelope-json-text> <is_error 0|1>
 }
 
 # ------------------------------------------------------------------- schemas
-# Kept deliberately small: 6 tools, every property load-bearing. Each schema is
-# paid for in every session of every user.
+# Every schema mirrors one CLI lifecycle operation. No schema exposes force.
 tools_json() {
   cat <<'JSON'
 [
  {"name":"workspace_status",
-  "description":"List every workspace slot with branch, dirty count, ahead/behind, lock holder and whether it is claimable. Read-only. Call this before claiming.",
+  "description":"List every workspace slot with git, environment, phantom-dirty, lock metadata, remaining TTL, and claimability state. Read-only. Call this before claiming.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session. Use the same value for every call in the session. Lock ownership is scoped to it."}},
    "required":["session"]}},
 
  {"name":"workspace_claim",
-  "description":"Lock the first free workspace slot and return its path. Fails with no_free_slot rather than waiting or taking someone else's slot.",
+  "description":"Lock the first free workspace slot, preferring environment-ready slots, and return its path, environment state, and bootstrap hint.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session."},
     "reason":{"type":"string","description":"Short free text describing the task, shown to other agents."},
-    "session_pid":{"type":"integer","description":"Optional pid of this session's long-lived process. When given, the lock is released as soon as that process dies instead of waiting out the TTL. Never pass the pid of a shell you spawned for one command."}},
+    "session_pid":{"type":"integer","description":"Optional pid of this session's long-lived process. Never pass the pid of a shell spawned for one command."},
+    "ttl":{"type":"integer","minimum":1,"description":"Optional claim lifetime in hours. The configured ttl_hours is the upper bound."},
+    "task_id":{"type":"string","description":"Optional structured task or issue identifier."},
+    "branch":{"type":"string","description":"Optional task branch name."},
+    "agent":{"type":"string","description":"Optional agent model or tier."},
+    "require_env":{"type":"boolean","description":"Refuse instead of falling back to a missing or stale environment."}},
    "required":["session","reason"]}},
 
  {"name":"workspace_lock",
@@ -225,7 +229,11 @@ tools_json() {
     "session":{"type":"string","description":"Stable identifier for this agent session."},
     "slot":{"type":"string","description":"Slot id or workspace name from workspace_status."},
     "reason":{"type":"string","description":"Short free text describing the task."},
-    "session_pid":{"type":"integer","description":"Optional pid of this session's long-lived process."}},
+    "session_pid":{"type":"integer","description":"Optional pid of this session's long-lived process."},
+    "ttl":{"type":"integer","minimum":1,"description":"Optional lock lifetime in hours."},
+    "task_id":{"type":"string"},
+    "branch":{"type":"string"},
+    "agent":{"type":"string"}},
    "required":["session","slot","reason"]}},
 
  {"name":"workspace_release",
@@ -243,11 +251,47 @@ tools_json() {
    "required":["session"]}},
 
  {"name":"workspace_doctor",
-  "description":"Run health checks on one slot: checkout present, branch resolvable, upstream set, plus provider checks. Read-only.",
+  "description":"Run health checks on one slot or all slots. With fix_env, provision missing or stale project environments.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session."},
-    "slot":{"type":"string","description":"Slot id or workspace name."}},
-   "required":["session"]}}
+    "slot":{"type":"string","description":"Slot id or workspace name."},
+    "fix_env":{"type":"boolean","description":"Provision missing or stale environments when lock ownership permits."}},
+   "required":["session"]}},
+
+ {"name":"workspace_refresh",
+  "description":"Safely heal verified phantom-dirty idle slots. Refuses any dirt not exactly explained by a default-branch advance.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string"},"slot":{"type":"string","description":"Optional slot. All existing slots when omitted."}},
+   "required":["session"]}},
+
+ {"name":"workspace_prune",
+  "description":"Fetch and inspect merged local branches, optionally deleting only branches the CLI verifies as merged.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string"},"slot":{"type":"string","description":"Optional slot. All work slots when omitted."},
+    "confirm":{"type":"boolean","description":"Delete verified candidates. False only previews them."}},
+   "required":["session"]}},
+
+ {"name":"workspace_create",
+  "description":"Create one configured slot, optionally provisioning its project environment.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string"},"slot":{"type":"string"},
+    "with_env":{"type":"boolean","description":"Run the provider environment setup hook after creation."}},
+   "required":["session","slot"]}},
+
+ {"name":"workspace_recycle",
+  "description":"Return a finished slot to the remote default branch, delete its task branch, optionally remove reported untracked files, and release this session's lock. Refuses another session's lock.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string"},"slot":{"type":"string"},
+    "branch":{"type":"string","description":"Optional local task branch to delete. Defaults to the branch currently checked out."},
+    "clean_untracked":{"type":"boolean","description":"Remove untracked files after reporting their names."}},
+   "required":["session","slot"]}},
+
+ {"name":"workspace_done",
+  "description":"Mark a merged task done by recycling its slot and releasing this session's lock.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string"},"slot":{"type":"string"},
+    "branch":{"type":"string"},"clean_untracked":{"type":"boolean"}},
+   "required":["session","slot"]}}
 ]
 JSON
 }
@@ -281,7 +325,9 @@ lock_owner_of() { # lock_owner_of <owner> <slot>
 }
 
 tool_call() { # tool_call <name> <arguments-json>
-  local name="$1" args="$2" sess spid slot reason owner held
+  local name="$1" args="$2" sess spid slot reason owner held ttl task_id branch agent
+  local require_env fix_env with_env clean_untracked confirm
+  local -a call_args
   TOOL_ERR=0; TOOL_OUT=""
 
   sess="$(printf '%s' "$args" | jq -r '.session // empty')"
@@ -296,6 +342,15 @@ tool_call() { # tool_call <name> <arguments-json>
 
   slot="$(printf '%s' "$args" | jq -r '.slot // empty')"
   reason="$(printf '%s' "$args" | jq -r '.reason // empty')"
+  ttl="$(printf '%s' "$args" | jq -r '.ttl // empty')"
+  task_id="$(printf '%s' "$args" | jq -r '.task_id // empty')"
+  branch="$(printf '%s' "$args" | jq -r '.branch // empty')"
+  agent="$(printf '%s' "$args" | jq -r '.agent // empty')"
+  require_env="$(printf '%s' "$args" | jq -r '.require_env // false')"
+  fix_env="$(printf '%s' "$args" | jq -r '.fix_env // false')"
+  with_env="$(printf '%s' "$args" | jq -r '.with_env // false')"
+  clean_untracked="$(printf '%s' "$args" | jq -r '.clean_untracked // false')"
+  confirm="$(printf '%s' "$args" | jq -r '.confirm // false')"
 
   case "$name" in
     workspace_status)
@@ -305,7 +360,14 @@ tool_call() { # tool_call <name> <arguments-json>
       if [ -z "$reason" ]; then
         fail_tool "$name" EUSAGE "reason is required"; return 0
       fi
-      ws_call "$owner" "$spid" claim --json "$reason" || true
+      call_args=(claim --json)
+      [ -n "$ttl" ] && call_args+=(--ttl "$ttl")
+      [ -n "$task_id" ] && call_args+=(--task-id "$task_id")
+      [ -n "$branch" ] && call_args+=(--branch "$branch")
+      [ -n "$agent" ] && call_args+=(--agent "$agent")
+      [ "$require_env" = "true" ] && call_args+=(--require-env)
+      call_args+=("$reason")
+      ws_call "$owner" "$spid" "${call_args[@]+"${call_args[@]}"}" || true
       if ! env_failed "$WS_OUT"; then
         held_add "$sess" "$(printf '%s' "$WS_OUT" | jq -r '.data.slot // empty')" "$owner"
       fi ;;
@@ -314,7 +376,13 @@ tool_call() { # tool_call <name> <arguments-json>
       if [ -z "$slot" ] || [ -z "$reason" ]; then
         fail_tool "$name" EUSAGE "slot and reason are required"; return 0
       fi
-      ws_call "$owner" "$spid" lock --json "$slot" "$reason" || true
+      call_args=(lock --json)
+      [ -n "$ttl" ] && call_args+=(--ttl "$ttl")
+      [ -n "$task_id" ] && call_args+=(--task-id "$task_id")
+      [ -n "$branch" ] && call_args+=(--branch "$branch")
+      [ -n "$agent" ] && call_args+=(--agent "$agent")
+      call_args+=("$slot" "$reason")
+      ws_call "$owner" "$spid" "${call_args[@]+"${call_args[@]}"}" || true
       if ! env_failed "$WS_OUT"; then
         held_add "$sess" "$(printf '%s' "$WS_OUT" | jq -r '.data.slot // empty')" "$owner"
       fi ;;
@@ -348,11 +416,50 @@ tool_call() { # tool_call <name> <arguments-json>
       fi ;;
 
     workspace_doctor)
+      call_args=(doctor --json)
+      [ "$fix_env" = "true" ] && call_args+=(--fix-env)
+      [ -n "$slot" ] && call_args+=("$slot")
+      ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
+
+    workspace_refresh)
       if [ -n "$slot" ]; then
-        ws_call "$owner" "" doctor --json "$slot" || true
+        ws_call "$owner" "" refresh --json "$slot" || true
       else
-        ws_call "$owner" "" doctor --json || true
+        ws_call "$owner" "" refresh --json || true
       fi ;;
+
+    workspace_prune)
+      call_args=(prune --json)
+      [ "$confirm" = "true" ] && call_args+=(--yes)
+      [ -n "$slot" ] && call_args+=("$slot")
+      ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
+
+    workspace_create)
+      if [ -z "$slot" ]; then fail_tool "$name" EUSAGE "slot is required"; return 0; fi
+      call_args=(create --json)
+      [ "$with_env" = "true" ] && call_args+=(--with-env)
+      call_args+=("$slot")
+      ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
+
+    workspace_recycle|workspace_done)
+      if [ -z "$slot" ]; then fail_tool "$name" EUSAGE "slot is required"; return 0; fi
+      held="$(lock_owner_of "$owner" "$slot")"
+      if [ -n "$held" ] && [ "$held" != "$owner" ]; then
+        TOOL_ERR=1
+        TOOL_OUT="$(jq -cn --arg c "$name" --arg s "$slot" --arg o "$held" --arg me "$owner" \
+          '{ok:false,command:$c,data:null,
+            error:{code:"not_owner",
+                   message:("slot " + $s + " is held by " + $o + ", not by this session (" + $me + "). Leave it alone."),
+                   owner:$o}}')"
+        return 0
+      fi
+      if [ "$name" = "workspace_done" ]; then call_args=("done" --json)
+      else call_args=(recycle --json); fi
+      [ -n "$branch" ] && call_args+=(--branch "$branch")
+      [ "$clean_untracked" = "true" ] && call_args+=(--clean-untracked)
+      call_args+=("$slot")
+      ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true
+      if ! env_failed "$WS_OUT"; then held_drop "$sess" "$slot"; fi ;;
 
     *)
       fail_tool "$name" ENOTFOUND "unknown tool $name"; return 0 ;;

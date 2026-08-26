@@ -27,6 +27,9 @@ One file per slot, in a central registry, `KEY=VALUE` lines:
 ```
 owner=claude:refactor-parser
 reason=refactor the parser
+task_id=GH-123
+branch=feat/parser
+agent=codex
 epoch=1770000000
 host=devbox
 pid=48213
@@ -42,12 +45,20 @@ cleaning that slot would destroy the lock that says someone is using it.
 |---|---|
 | `owner` | Caller-supplied identity string. Advisory. |
 | `reason` | Free text. Shown to anyone who is blocked. |
+| `task_id` | Optional structured task or issue identifier. |
+| `branch` | Optional task branch. |
+| `agent` | Optional agent model or tier. |
 | `epoch` | Acquisition time, seconds. Drives TTL. |
 | `host` | `hostname -s` at acquisition. Gates all pid reasoning. |
 | `pid` | The `agentws` process that wrote the file. **Forensics only.** |
 | `owner_pid` | The long-lived session process, from `AGENTWS_PID`. The only liveness source. |
 | `owner_start` | That process's start time in clock ticks. Detects pid reuse. |
-| `ttl` | Lifetime in hours. |
+| `ttl` | Lifetime in hours, captured per lock. |
+
+`ttl_hours` in configuration is both the default and the maximum. A claim can
+request a shorter lifetime with `--ttl H`; the effective value is written into
+the lock so later commands do not reinterpret it after a configuration change.
+`status` and `locks` show both the effective TTL and the remaining time.
 
 ### `pid` is not `owner_pid`, and the difference is the whole design
 
@@ -107,7 +118,7 @@ A lock is in exactly one of four states.
 - **BUSY**: what a second acquirer sees. Return code 1, message names the
   current holder, reason, and age.
 - **STALE(process_dead)**: the owning process is definitively gone. Reclaimable.
-- **STALE(ttl)**: age has reached `ttl_hours`. Reclaimable regardless of
+- **STALE(ttl)**: age has reached the lock's effective TTL. Reclaimable regardless of
   liveness.
 
 `lock_stale_reason` returns `""`, `process_dead`, or `ttl`, and checks them in

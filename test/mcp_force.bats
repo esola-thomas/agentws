@@ -46,10 +46,10 @@ EOF
   ! grep -nE 'FORCE=1|FORCE=true' "$MCP"
 }
 
-@test "the six tool schemas are exactly the documented set" {
+@test "the lifecycle tool schemas are exactly the documented set" {
   local names
   names="$(sed -n 's/.*"name":"\(workspace_[a-z_]*\)".*/\1/p' "$MCP" | sort -u | tr '\n' ' ')"
-  [ "$names" = "workspace_claim workspace_doctor workspace_lock workspace_release workspace_status workspace_sync " ]
+  [ "$names" = "workspace_claim workspace_create workspace_doctor workspace_done workspace_lock workspace_prune workspace_recycle workspace_refresh workspace_release workspace_status workspace_sync " ]
 }
 
 @test "workspace_lock tells the model a busy result is final" {
@@ -128,11 +128,27 @@ busy_envelope() {
   [ ! -s "$STUB_DIR/calls" ]
 }
 
-@test "tools/list advertises six tools and no force parameter anywhere" {
+@test "tools/list advertises eleven tools and no force parameter anywhere" {
   write_stub 0 '{"ok":true,"command":"status","data":{},"error":null}'
   local out body
   out="$(mcp_send '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')"
   body="$(printf '%s' "$out" | sed -e 's/^Content-Length:[^{]*//')"
-  [ "$(printf '%s' "$body" | jq -r '.result.tools | length')" = "6" ]
+  [ "$(printf '%s' "$body" | jq -r '.result.tools | length')" = "11" ]
   [ "$(printf '%s' "$body" | jq -r '[.result.tools[].inputSchema.properties | keys[]] | map(select(.=="force")) | length')" = "0" ]
+}
+
+@test "workspace_claim forwards structured metadata, ttl, and environment policy" {
+  write_stub 0 '{"ok":true,"command":"claim","data":{"slot":"1"},"error":null}'
+  mcp_send '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace_claim","arguments":{"session":"s1","reason":"work","ttl":2,"task_id":"GH-3","branch":"feat/env","agent":"codex","require_env":true}}}' >/dev/null
+  grep -q -- '--ttl 2' "$STUB_DIR/calls"
+  grep -q -- '--task-id GH-3' "$STUB_DIR/calls"
+  grep -q -- '--branch feat/env' "$STUB_DIR/calls"
+  grep -q -- '--agent codex' "$STUB_DIR/calls"
+  grep -q -- '--require-env' "$STUB_DIR/calls"
+}
+
+@test "workspace_recycle never retries a refusal" {
+  write_stub 4 '{"ok":false,"command":"recycle","data":null,"error":{"code":"ELOCKED","message":"not owner"}}'
+  mcp_send '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace_recycle","arguments":{"session":"s1","slot":"1"}}}' >/dev/null
+  [ "$(grep -c 'recycle' "$STUB_DIR/calls")" -eq 1 ]
 }

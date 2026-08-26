@@ -40,9 +40,9 @@ agentws status                           # branch, dirty, lock, claimable
 export AGENTWS_PID=$$                    # your long-lived shell; enables liveness
 export AGENTWS_OWNER="claude:refactor"
 eval "$(agentws claim 'refactor the parser' --print-env)"
-cd "$AGENTWS_SLOT_PATH"
+cd "$AGENTWS_WS"
 # ... work ...
-agentws unlock 1
+agentws done 1                         # after the task branch has merged
 ```
 
 Every command takes `--json` and prints exactly one envelope line on stdout:
@@ -57,7 +57,7 @@ Human narrative always goes to stderr, so `--json` output is safe to pipe into
 ## Forge-agnostic
 
 `agentws` uses plain git porcelain only: `fetch`, `branch`, `status`,
-`rev-parse`, `worktree`, `clone`. It never calls a forge API. There is no `gh`,
+`rev-parse`, `worktree`, `clone`, `checkout`, `reset`, and `clean`. It never calls a forge API. There is no `gh`,
 no `az`, no `glab`, no REST client, no token, no PAT storage.
 
 That means it works identically against GitHub, Azure DevOps, GitLab,
@@ -80,25 +80,31 @@ or write the lock directory: locking is core-only.
 | `fullclone` | An independent `git clone` per slot | When slots need untracked per-slot state, or separate build trees, that a worktree cannot carry. |
 
 Write your own by copying `providers/_contract.sh`, implementing the hooks you
-need, and naming it in `provider:` in your config. There is no plugin registry
-and nothing is downloaded.
+need, and naming it in `provider:` in your config. Project-aware providers can
+also implement `provider_env_check`, `provider_env_setup`, and
+`provider_bootstrap_hint`. There is no plugin registry and nothing is downloaded.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and `providers/_contract.sh` for the contract.
 
 ## Agent tool integration
 
 `mcp/agentws-mcp` is an optional JSON-RPC stdio server in bash and jq. It
-exposes six tools and never touches a lock file itself; every action is one
-`exec` of `agentws --json`, the same ABI the CLI uses.
+exposes the full slot lifecycle and never touches a lock file itself; every
+action is one `exec` of `agentws --json`, the same ABI the CLI uses.
 
 | Tool | Arguments |
 |---|---|
 | `workspace_status` | none |
-| `workspace_claim` | `reason` |
-| `workspace_lock` | `slot`, `reason` |
+| `workspace_claim` | `reason`; optional `ttl`, `task_id`, `branch`, `agent`, `require_env` |
+| `workspace_lock` | `slot`, `reason`; optional TTL and metadata |
 | `workspace_release` | `slot` |
 | `workspace_sync` | `slot` (optional) |
-| `workspace_doctor` | `slot` |
+| `workspace_doctor` | `slot` (optional), `fix_env` (optional) |
+| `workspace_refresh` | `slot` (optional) |
+| `workspace_prune` | `slot`, `confirm` (both optional) |
+| `workspace_create` | `slot`, `with_env` (optional) |
+| `workspace_recycle` | `slot`, `branch`, `clean_untracked` (last two optional) |
+| `workspace_done` | same as `workspace_recycle` |
 
 There is no `force` parameter on any of them, by design. A busy slot returns a
 structured refusal so the model reports the block instead of retrying into it.
@@ -126,6 +132,31 @@ agentws status --json
 agentws claim "reason" --json
 agentws unlock 1 --json
 ```
+
+## Slot lifecycle
+
+`status` and `free` report `env: ready | missing | stale`. `claim` prefers a
+ready environment, while `claim --require-env` refuses to fall back. Providers
+can return a bootstrap hint with the claimed slot. Use `create --with-env` to
+provision a new slot or `doctor --fix-env` to repair one.
+
+Worktree slots can become `phantom-dirty` when another worktree advances the
+shared default branch ref. `refresh` heals only a tree whose index exactly
+matches an ancestor of `origin/<default_branch>` and whose working tree has no
+extra tracked or untracked changes. All other dirt is refused. Set
+`auto_refresh: true` to run the same proof before claim skips such a slot.
+
+After a task branch has merged, `recycle <slot>` fetches, returns the slot to
+the remote default branch, deletes the local task branch, and releases the
+caller's lock. Untracked files are listed and block recycling unless
+`--clean-untracked` is explicit. `done` is the shorter spelling of `recycle`.
+
+Claims can carry `--task-id`, `--branch`, and `--agent` metadata. A per-claim
+`--ttl H` is stored on the lock and capped by `ttl_hours`. `status` and `locks`
+show the remaining TTL. Optional finished-slot reaping is configured with
+`auto_release: true` and `auto_release_minutes: N`; `doctor` starts a quiet
+observation period and releases only a locked, clean slot that remains on the
+default branch at the same commit for that period.
 
 The JSON envelope is the stable interface. MCP is a convenience on top of it,
 not a requirement.
@@ -186,8 +217,9 @@ them.
   to judge, not by coordinating.
 - **No build, test, or regression orchestration.** `agentws` does not know what
   a testsuite is.
-- **No git operations beyond fetch, fast-forward, branch listing, and branch
-  deletion.** It reports that a slot is dirty; it never cleans it.
+- **No arbitrary cleanup.** `refresh` resets only verified phantom dirt, and
+  `recycle --clean-untracked` removes only reported untracked files after an
+  explicit flag. Tracked user changes are never discarded.
 - **No plugin registry or provider downloads.** A provider is a file you place
   in `providers/`.
 - **No telemetry.**
