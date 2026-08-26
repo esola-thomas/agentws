@@ -17,6 +17,9 @@ setup_sandbox() { # setup_sandbox [slots...]
   LOCKS="$SANDBOX/locks"
   PROC="$SANDBOX/proc"
   mkdir -p "$ROOT" "$LOCKS" "$PROC"
+  ROOT="$(cd "$ROOT" && pwd -P)"
+  LOCKS="$(cd "$LOCKS" && pwd -P)"
+  PROC="$(cd "$PROC" && pwd -P)"
 
   for s in $slots; do
     make_slot_repo "$s"

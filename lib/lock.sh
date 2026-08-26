@@ -28,15 +28,56 @@ lock_age_hours() { # lock_age_hours <slot> -> integer hours, or empty
   printf '%d' $(( (now - ts) / 3600 ))
 }
 
+lock_age_seconds() { # lock_age_seconds <slot> -> integer seconds, or empty
+  local ts now
+  ts="$(lock_read "$1" epoch 2>/dev/null || true)"
+  [ -n "$ts" ] && [[ "$ts" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  printf '%d' $((now - ts))
+}
+
 # Effective TTL, floored at 1 hour. A TTL of 0 would make every lock stale the
 # instant it is written, overriding a positive liveness verdict and handing a
 # running agent's workspace to a second one. Reachable via --ttl 0, AGENTWS_TTL=0
 # and ttl_hours: 0, none of which require --force.
-lock_ttl_hours() {
+lock_config_ttl_hours() {
   case "${AGENTWS_TTL_HOURS:-}" in
     ''|*[!0-9]*) printf '12'; return 0 ;;
   esac
   if [ "$AGENTWS_TTL_HOURS" -lt 1 ]; then printf '1'; else printf '%s' "$AGENTWS_TTL_HOURS"; fi
+}
+
+lock_claim_ttl_hours() {
+  local requested max
+  max="$(lock_config_ttl_hours)"
+  requested="${TTL_OVERRIDE:-$max}"
+  case "$requested" in ''|*[!0-9]*) requested="$max" ;; esac
+  [ "$requested" -lt 1 ] && requested=1
+  [ "$requested" -gt "$max" ] && requested="$max"
+  printf '%s' "$requested"
+}
+
+lock_ttl_hours() { # lock_ttl_hours [slot]
+  local stored=""
+  if [ -n "${1-}" ]; then stored="$(lock_read "$1" ttl 2>/dev/null || true)"; fi
+  case "$stored" in ''|*[!0-9]*) lock_config_ttl_hours ;; *)
+    if [ "$stored" -lt 1 ]; then printf '1'; else printf '%s' "$stored"; fi ;;
+  esac
+}
+
+lock_remaining_minutes() { # lock_remaining_minutes <slot>
+  local age remain
+  age="$(lock_age_seconds "$1" 2>/dev/null || echo 0)"
+  remain=$(( $(lock_ttl_hours "$1") * 3600 - age ))
+  [ "$remain" -lt 0 ] && remain=0
+  printf '%d' $(( (remain + 59) / 60 ))
+}
+
+lock_remaining_display() { # lock_remaining_display <slot>
+  local minutes hours rest
+  minutes="$(lock_remaining_minutes "$1")"
+  hours=$((minutes / 60)); rest=$((minutes % 60))
+  if [ "$hours" -gt 0 ]; then printf '%sh%02sm' "$hours" "$rest"; else printf '%sm' "$rest"; fi
 }
 
 # Strip anything that could forge a KEY=VALUE record in the lock file. lock_read
@@ -93,9 +134,9 @@ lock_owner_alive() { # lock_owner_alive <slot>
 lock_stale_reason() { # lock_stale_reason <slot>
   [ -f "$(lock_file "$1")" ] || return 0
   if ! lock_owner_alive "$1"; then printf 'process_dead'; return 0; fi
-  local age; age="$(lock_age_hours "$1" 2>/dev/null || true)"
+  local age; age="$(lock_age_seconds "$1" 2>/dev/null || true)"
   [ -n "$age" ] || return 0
-  [ "$age" -ge "$(lock_ttl_hours)" ] && printf 'ttl'
+  [ "$age" -ge "$(( $(lock_ttl_hours "$1") * 3600 ))" ] && printf 'ttl'
   return 0
 }
 
@@ -141,14 +182,14 @@ lock_warn_no_liveness() {
   mkdir -p "$stampdir" 2>/dev/null
   : > "$stampfile" 2>/dev/null || true
   printf 'agentws: no %s on this platform; locks expire by TTL only (ttl_hours=%s). To reclaim early: agentws unlock <slot> --force\n' \
-    "$AGENTWS_PROC" "$(lock_ttl_hours)" >&2
+    "$AGENTWS_PROC" "$(lock_config_ttl_hours)" >&2
 }
 
 cmd_lock() {
   [ $# -ge 1 ] || die "lock needs a slot, e.g. agentws lock 1 \"fp migration\""
   local slot="$1"; shift
   local reason; reason="$(lock_sanitize "${*:-unspecified}")"
-  local d f; d="$(provider_slot_path "$slot")"; f="$(lock_file "$slot")"
+  local f; f="$(lock_file "$slot")"
   provider_slot_exists "$slot" || die "$(slot_name "$slot") does not exist"
 
   mkdir -p "$AGENTWS_LOCK_DIR" 2>/dev/null
@@ -182,17 +223,20 @@ cmd_lock() {
   # AGENTWS_PID (or legacy WSCTL_PID); without it the lock falls back to TTL
   # expiry, because the agentws process itself exits immediately and must never
   # be used as a liveness proxy.
-  local opid ostart extra
+  local opid ostart extra claim_ttl
   opid="${AGENTWS_PID:-${WSCTL_PID:-}}"
   extra=""
   if [ -n "$opid" ] && [[ "$opid" =~ ^[0-9]+$ ]] && [ -e "$AGENTWS_PROC/$opid" ]; then
     ostart="$(awk '{print $22}' "$AGENTWS_PROC/$opid/stat" 2>/dev/null || true)"
     extra="$(printf 'owner_pid=%s\nowner_start=%s' "$opid" "$ostart")"
   fi
+  claim_ttl="$(lock_claim_ttl_hours)"
 
-  if ( set -o noclobber; printf 'owner=%s\nreason=%s\nepoch=%s\nstamp=%s\nhost=%s\npid=%s\n%s\n' \
-        "$(lock_sanitize "$OWNER")" "$reason" "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S')" \
-        "$(hostname -s 2>/dev/null)" "$$" "$extra" > "$f" ) 2>/dev/null; then
+  if ( set -o noclobber; printf 'owner=%s\nreason=%s\ntask_id=%s\nbranch=%s\nagent=%s\nepoch=%s\nstamp=%s\nhost=%s\npid=%s\nttl=%s\n%s\n' \
+        "$(lock_sanitize "$OWNER")" "$reason" \
+        "$(lock_sanitize "${CLAIM_TASK_ID:-}")" "$(lock_sanitize "${CLAIM_BRANCH:-}")" \
+        "$(lock_sanitize "${CLAIM_AGENT:-}")" "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S')" \
+        "$(hostname -s 2>/dev/null)" "$$" "$claim_ttl" "$extra" > "$f" ) 2>/dev/null; then
     printf '%s locked %s as %s\n' "$(c_grn OK)" "$(slot_name "$slot")" "$OWNER"
     printf '   reason: %s\n' "$reason"
   else
@@ -224,11 +268,17 @@ cmd_locks() {
     for s in $AGENTWS_SLOTS; do
       [ -f "$(lock_file "$s")" ] || continue
       sr="$(lock_stale_reason "$s")"
-      objs+=("$(printf '{"slot":%s,"name":%s,"owner":%s,"reason":%s,"age_hours":%s,"epoch":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s}' \
+      objs+=("$(printf '{"slot":%s,"name":%s,"owner":%s,"reason":%s,"task_id":%s,"branch":%s,"agent":%s,"age_hours":%s,"ttl_hours":%s,"remaining_minutes":%s,"remaining_ttl":%s,"epoch":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s}' \
         "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" \
         "$(jstr "$(lock_read "$s" owner  2>/dev/null || true)")" \
         "$(jstr "$(lock_read "$s" reason 2>/dev/null || true)")" \
+        "$(jstr "$(lock_read "$s" task_id 2>/dev/null || true)")" \
+        "$(jstr "$(lock_read "$s" branch 2>/dev/null || true)")" \
+        "$(jstr "$(lock_read "$s" agent 2>/dev/null || true)")" \
         "$(jnum "$(lock_age_hours "$s" 2>/dev/null || echo 0)")" \
+        "$(jnum "$(lock_ttl_hours "$s")")" \
+        "$(jnum "$(lock_remaining_minutes "$s")")" \
+        "$(jstr "$(lock_remaining_display "$s")")" \
         "$(jnum "$(lock_read "$s" epoch 2>/dev/null || echo 0)")" \
         "$(jstr "$(lock_read "$s" host   2>/dev/null || true)")" \
         "$(jbool "$(if [ -n "$sr" ]; then echo 1; else echo 0; fi)")" \
@@ -237,12 +287,12 @@ cmd_locks() {
         "$(jbool "$live")")")
     done
     printf '{"ttl_hours":%s,"owner":%s,"liveness_supported":%s,"locks":[%s]}\n' \
-      "$(jnum "$(lock_ttl_hours)")" "$(jstr "$OWNER")" "$(jbool "$live")" \
+      "$(jnum "$(lock_config_ttl_hours)")" "$(jstr "$OWNER")" "$(jbool "$live")" \
       "$(jjoin "${objs[@]+"${objs[@]}"}")"
     return 0
   fi
   local found=0 s f age state
-  printf '%-12s %-28s %-6s %s\n' "WORKSPACE" "OWNER" "AGE" "REASON"
+  printf '%-12s %-28s %-8s %-8s %s\n' "WORKSPACE" "OWNER" "AGE" "REMAIN" "REASON"
   printf '%s\n' "-------------------------------------------------------------------------------"
   for s in $AGENTWS_SLOTS; do
     f="$(lock_file "$s")"
@@ -250,10 +300,10 @@ cmd_locks() {
     found=1
     age="$(lock_age_hours "$s")"
     if lock_is_stale "$s"; then state="${age}h STALE"; else state="${age}h"; fi
-    printf '%-12s %-28s %-6s %s\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" \
-      "$state" "$(lock_read "$s" reason)"
+    printf '%-12s %-28s %-8s %-8s %s\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" \
+      "$state" "$(lock_remaining_display "$s")" "$(lock_read "$s" reason)"
   done
   [ $found -eq 0 ] && printf '%s\n' "$(c_dim 'no active locks')"
-  printf '\n%s\n' "$(c_dim "ttl $(lock_ttl_hours)h; locks older than that are stale and can be taken over")"
+  printf '\n%s\n' "$(c_dim "default ttl $(lock_config_ttl_hours)h; each claim may request a shorter ttl")"
   return 0
 }

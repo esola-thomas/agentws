@@ -1,7 +1,7 @@
 # agentws MCP server
 
-`agentws-mcp` is a JSON-RPC 2.0 stdio server that exposes six agentws
-operations to an MCP client. It contains no workspace logic. Every tool shells
+`agentws-mcp` is a JSON-RPC 2.0 stdio server that exposes the full agentws
+lifecycle to an MCP client. It contains no workspace logic. Every tool shells
 out to `agentws <cmd> --json`, the same interface a human uses at the terminal,
 and returns that envelope unchanged. If the server and the CLI ever disagree,
 the server is wrong.
@@ -24,17 +24,22 @@ the server is wrong.
 
 ## Tools
 
-Six tools, no more. Each schema is paid for in the context of every session of
-every user, so anything not needed mid-task stays CLI-only.
+Eleven tools cover acquisition, inspection, maintenance, creation, and
+end-of-task cleanup.
 
 | Tool | Required arguments |
 |---|---|
 | `workspace_status` | `session` |
-| `workspace_claim` | `session`, `reason` (optional `session_pid`) |
-| `workspace_lock` | `session`, `slot`, `reason` (optional `session_pid`) |
+| `workspace_claim` | `session`, `reason` (optional `session_pid`, `ttl`, `task_id`, `branch`, `agent`, `require_env`) |
+| `workspace_lock` | `session`, `slot`, `reason` (optional `session_pid`, `ttl`, and structured metadata) |
 | `workspace_release` | `session`, `slot` |
 | `workspace_sync` | `session` (optional `slot`) |
-| `workspace_doctor` | `session` (optional `slot`) |
+| `workspace_doctor` | `session` (optional `slot`, `fix_env`) |
+| `workspace_refresh` | `session` (optional `slot`) |
+| `workspace_prune` | `session` (optional `slot`, `confirm`) |
+| `workspace_create` | `session`, `slot` (optional `with_env`) |
+| `workspace_recycle` | `session`, `slot` (optional `branch`, `clean_untracked`) |
+| `workspace_done` | same as `workspace_recycle` |
 
 Each returns one text content block holding the exact agentws envelope:
 
@@ -96,7 +101,7 @@ because they are the same exec.
 ### Copilot CLI
 
 Copy `copilot.example.json` into the Copilot CLI MCP config. Same server, same
-schemas. Confirm exactly six tools appear in the client's tool list.
+schemas. Confirm exactly eleven tools appear in the client's tool list.
 
 ### Other clients
 
@@ -113,7 +118,7 @@ command uses the CLI directly:
 agentws status --json
 agentws claim --json "fp legality migration"
 eval "$(agentws claim --print-env 'fp legality migration')"
-agentws release 2 --json
+agentws unlock 2 --json
 ```
 
 stdout under `--json` is exactly one line of valid JSON; narrative goes to

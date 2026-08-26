@@ -4,6 +4,20 @@ All notable changes to this project are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Safe phantom-dirty detection, `refresh`, and opt-in claim-time auto-refresh.
+- Provider environment check, setup, and bootstrap hint hooks, plus
+  environment-aware status, claim preference, `create --with-env`, and
+  `doctor --fix-env`.
+- `recycle` and `done` for end-of-task branch cleanup and lock release.
+- Per-lock TTL overrides, remaining TTL display, structured task metadata, and
+  opt-in finished-slot auto-release.
+- MCP tools for refresh, prune, create, recycle, and done, with claim metadata
+  and environment options.
+
 ## [0.1.0] - 2026-08-10
 
 First public release. Extracted from an internal tool that had been in daily use

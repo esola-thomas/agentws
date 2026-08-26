@@ -64,6 +64,67 @@ slot_dirty_count() { # slot_dirty_count <slot> -> integer
   printf '%s' "$n"
 }
 
+slot_untracked() { # slot_untracked <slot> -> paths, one per line
+  git -C "$(provider_slot_path "$1")" ls-files --others --exclude-standard 2>/dev/null || true
+}
+
+# Print the prior default-branch commit whose tree still occupies the index.
+# A match proves that every tracked difference is explained by the shared
+# default-branch ref advancing in another worktree.
+slot_phantom_base() { # slot_phantom_base <slot>
+  local s="$1" d target head index_tree commit commit_tree
+  provider_slot_exists "$s" || return 1
+  [ "$(slot_branch "$s")" = "$AGENTWS_DEFAULT_BRANCH" ] || return 1
+  [ "$(slot_dirty_count "$s")" != "0" ] || return 1
+  d="$(provider_slot_path "$s")"
+
+  [ -z "$(slot_untracked "$s")" ] || return 1
+  git -C "$d" diff --quiet --ignore-submodules=none -- 2>/dev/null || return 1
+  target="$(git -C "$d" rev-parse "origin/$AGENTWS_DEFAULT_BRANCH" 2>/dev/null || true)"
+  head="$(git -C "$d" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$target" ] && [ "$head" = "$target" ] || return 1
+  index_tree="$(git -C "$d" write-tree 2>/dev/null || true)"
+  [ -n "$index_tree" ] || return 1
+  [ "$index_tree" != "$(git -C "$d" rev-parse "$target^{tree}" 2>/dev/null || true)" ] || return 1
+
+  for commit in $(git -C "$d" rev-list "$target" 2>/dev/null); do
+    commit_tree="$(git -C "$d" rev-parse "$commit^{tree}" 2>/dev/null || true)"
+    if [ "$commit_tree" = "$index_tree" ]; then
+      printf '%s' "$commit"
+      return 0
+    fi
+  done
+  return 1
+}
+
+slot_dirty_state() { # slot_dirty_state <slot> -> clean|phantom-dirty|dirty
+  if [ "$(slot_dirty_count "$1")" = "0" ]; then
+    printf 'clean'
+  elif slot_phantom_base "$1" >/dev/null; then
+    printf 'phantom-dirty'
+  else
+    printf 'dirty'
+  fi
+}
+
+slot_env_state() { # slot_env_state <slot> -> ready|missing|stale
+  local state
+  state="$(provider_env_check "$1" "$(provider_slot_path "$1")" 2>/dev/null | head -1 || true)"
+  case "$state" in ready|missing|stale) printf '%s' "$state" ;; *) printf 'stale' ;; esac
+}
+
+slot_bootstrap_hint() { # slot_bootstrap_hint <slot>
+  provider_bootstrap_hint "$1" "$(provider_slot_path "$1")" 2>/dev/null | head -1 || true
+}
+
+slot_env_marker() { printf '%s/.agentws/env/%s.ready' "$AGENTWS_ROOT" "$1"; }
+
+slot_env_setup_epoch() {
+  local f
+  f="$(slot_env_marker "$1")"
+  [ -f "$f" ] && sed -n '1p' "$f" || true
+}
+
 slot_upstream() { # slot_upstream <slot>
   git -C "$(provider_slot_path "$1")" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true
 }
@@ -112,10 +173,16 @@ json_lock_obj() { # json_lock_obj <slot> -> object or null
   local s="$1" sr
   [ -f "$(lock_file "$s")" ] || { printf 'null'; return 0; }
   sr="$(lock_stale_reason "$s")"
-  printf '{"owner":%s,"reason":%s,"age_hours":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s}' \
+  printf '{"owner":%s,"reason":%s,"task_id":%s,"branch":%s,"agent":%s,"age_hours":%s,"ttl_hours":%s,"remaining_minutes":%s,"remaining_ttl":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s}' \
     "$(jstr "$(lock_read "$s" owner  2>/dev/null || true)")" \
     "$(jstr "$(lock_read "$s" reason 2>/dev/null || true)")" \
+    "$(jstr "$(lock_read "$s" task_id 2>/dev/null || true)")" \
+    "$(jstr "$(lock_read "$s" branch 2>/dev/null || true)")" \
+    "$(jstr "$(lock_read "$s" agent 2>/dev/null || true)")" \
     "$(jnum "$(lock_age_hours "$s" 2>/dev/null || echo 0)")" \
+    "$(jnum "$(lock_ttl_hours "$s")")" \
+    "$(jnum "$(lock_remaining_minutes "$s")")" \
+    "$(jstr "$(lock_remaining_display "$s")")" \
     "$(jstr "$(lock_read "$s" host   2>/dev/null || true)")" \
     "$(jbool "$(if [ -n "$sr" ]; then echo 1; else echo 0; fi)")" \
     "$(if [ -n "$sr" ]; then jstr "$sr"; else printf 'null'; fi)" \
@@ -125,11 +192,15 @@ json_lock_obj() { # json_lock_obj <slot> -> object or null
 
 # The single per-slot object. wsctl:463.
 json_slot_obj() { # json_slot_obj <slot>
-  local s="$1" d role br dirty up ab ahead behind warns
+  local s="$1" d role br dirty dirty_state env env_epoch hint up ab ahead behind warns
   d="$(provider_slot_path "$s")"
   role="$(slot_role "$s")"
   br="$(slot_branch "$s")"
   dirty="$(slot_dirty_count "$s")"
+  dirty_state="$(slot_dirty_state "$s")"
+  env="$(slot_env_state "$s")"
+  env_epoch="$(slot_env_setup_epoch "$s")"
+  hint="$(slot_bootstrap_hint "$s")"
   up="$(slot_upstream "$s")"
   ab="$(slot_ahead_behind "$s")"
   ahead="${ab%% *}"; behind="${ab##* }"
@@ -141,11 +212,15 @@ json_slot_obj() { # json_slot_obj <slot>
   fi
   [ -z "$up" ] && warns="$(jjoin "$warns" '"no_upstream"')"
   [ "$behind" != "0" ] && warns="$(jjoin "$warns" '"behind_upstream"')"
+  [ "$dirty_state" = "phantom-dirty" ] && warns="$(jjoin "$warns" '"phantom_dirty"')"
+  [ "$env" != "ready" ] && warns="$(jjoin "$warns" '"environment_not_ready"')"
 
-  printf '{"slot":%s,"name":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"warnings":[%s]}' \
+  printf '{"slot":%s,"name":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"warnings":[%s]}' \
     "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$d")" "$(jstr "$role")" \
     "$(jbool "$(provider_slot_exists "$s" && echo 1 || echo 0)")" \
-    "$(jstr "$br")" "$(jnum "$dirty")" "$(jnum "$ahead")" "$(jnum "$behind")" \
+    "$(jstr "$br")" "$(jnum "$dirty")" "$(jstr "$dirty_state")" "$(jstr "$env")" \
+    "$(if [ -n "$env_epoch" ]; then jnum "$env_epoch"; else printf 'null'; fi)" \
+    "$(jstr "$hint")" "$(jnum "$ahead")" "$(jnum "$behind")" \
     "$(jbool "$(if [ -n "$up" ]; then echo 1; else echo 0; fi)")" \
     "$(if [ -n "$up" ]; then jstr "$up"; else printf 'null'; fi)" \
     "$(jbool "$(slot_free "$s" && echo 1 || echo 0)")" \

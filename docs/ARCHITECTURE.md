@@ -55,7 +55,7 @@ thing that varies.
 
 ### The provider contract
 
-Seven functions. `providers/_contract.sh` supplies a default for each, so a
+Eleven functions. `providers/_contract.sh` supplies a default for each, so a
 provider only implements what it actually changes.
 
 | Hook | Purpose | Default |
@@ -68,6 +68,9 @@ provider only implements what it actually changes.
 | `provider_slot_doctor <slot> <path>` | Extra health checks. | Prints one OK line |
 | `provider_commands` | Space-separated extra subcommand names. | Empty |
 | `provider_claim_env <slot> <path>` | Extra shell assignments for `claim --print-env`. | No-op |
+| `provider_env_check <slot> <path>` | Print `ready`, `missing`, or `stale`. Must be cheap enough for status. | `ready` |
+| `provider_env_setup <slot> <path>` | Provision or repair the project environment. | No-op |
+| `provider_bootstrap_hint <slot> <path>` | Short instruction returned to a claimed worker. | Empty |
 
 `provider_slot_exists` is a hook rather than a core `-d "$d/.git"` test because
 not every provider materialises a `.git` at all. A worktree writes a `.git`
@@ -169,6 +172,10 @@ Paths get `~/` expanded and the placeholders `{root}`, `{top}`, `{slot}`,
 `{user}` substituted, then `root` and `lock_dir` are canonicalised with
 `pwd -P`. Canonicalisation matters: two symlinked paths to one physical checkout
 must not produce two different lock files.
+
+`auto_refresh` enables safe claim-time phantom recovery. `auto_release` and
+`auto_release_minutes` enable doctor's conservative finished-slot observation
+and reaping. Both behaviors are disabled by default.
 
 `provider_opts` becomes `AGENTWS_P_*`. Core code never reads `AGENTWS_P_*`, and
 providers never read the config file directly.

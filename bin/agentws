@@ -10,7 +10,10 @@
 #   agentws locks                  show all locks and their age
 #   agentws sync [slot...]         fetch + prune; fast-forward the reference slot
 #   agentws prune [slot...]        delete merged local branches, after listing them
-#   agentws create <slot>          create a slot via the provider
+#   agentws refresh [slot...]      safely heal phantom-dirty idle slots
+#   agentws recycle <slot>         return a finished slot to service and release it
+#   agentws done <slot>            alias for recycle
+#   agentws create <slot>          create a slot; --with-env provisions its environment
 #   agentws destroy <slot>         remove a slot via the provider
 #   agentws doctor [slot...]       health checks, core plus provider
 #   agentws config                 show the resolved configuration
@@ -30,7 +33,14 @@
 # Options: --dry-run     print what would happen, change nothing
 #          --yes         skip confirmation on destructive actions
 #          --owner ID    identity to lock as (default: $AGENTWS_OWNER, else user@host:pid)
-#          --ttl H       lock lifetime in hours (default from config)
+#          --ttl H       per-lock lifetime in hours, clamped to ttl_hours
+#          --task-id ID  structured task id stored on a claim
+#          --branch NAME structured task branch, or recycle branch to delete
+#          --agent NAME  structured agent/model description stored on a claim
+#          --require-env claim only an environment-ready slot
+#          --with-env    create: provision the environment after checkout creation
+#          --fix-env     doctor: provision missing or stale environments
+#          --clean-untracked recycle: remove reported untracked files
 #          --force       act on a locked workspace anyway
 #          --json        machine-readable output
 #          --print-env   claim: emit shell assignments for eval
@@ -69,6 +79,13 @@ FORCE=0
 JSON=0
 IGNORE_PID=0
 PRINT_ENV=0
+REQUIRE_ENV=0
+WITH_ENV=0
+FIX_ENV=0
+CLEAN_UNTRACKED=0
+CLAIM_TASK_ID=""
+CLAIM_BRANCH=""
+CLAIM_AGENT=""
 
 # shellcheck source=../lib/core.sh
 . "$AGENTWS_LIB_DIR/core.sh"
@@ -88,7 +105,7 @@ PRINT_ENV=0
 OWNER="${AGENTWS_OWNER:-${WSCTL_OWNER:-${USER}@$(hostname -s 2>/dev/null || echo host):$$}}"
 TTL_OVERRIDE="${AGENTWS_TTL:-${WSCTL_TTL:-}}"
 
-usage() { sed -n '2,38p' "$AGENTWS_SELF" | sed 's/^# \?//'; }
+usage() { sed -n '2,48p' "$AGENTWS_SELF" | sed 's/^# \?//'; }
 
 # init runs before config_load: it exists precisely because there is no config.
 cmd_init() { # cmd_init [dir]
@@ -121,6 +138,9 @@ slot_name_format: "{slot}_{top}"
 reference_slot: ""
 exclude_from_claim: []
 ttl_hours: 12
+auto_refresh: false
+auto_release: false
+auto_release_minutes: 30
 lock_dir: "{root}/.agentws/locks"
 provider_opts:
   source_repo: $root
@@ -138,8 +158,15 @@ while [ $# -gt 0 ]; do
     --json)       JSON=1; shift ;;
     --ignore-pid) IGNORE_PID=1; shift ;;
     --print-env)  PRINT_ENV=1; shift ;;
+    --require-env) REQUIRE_ENV=1; shift ;;
+    --with-env)   WITH_ENV=1; shift ;;
+    --fix-env)    FIX_ENV=1; shift ;;
+    --clean-untracked) CLEAN_UNTRACKED=1; shift ;;
     --owner)      [ $# -ge 2 ] || die "--owner needs a value"; OWNER="$2"; shift 2 ;;
     --ttl)        [ $# -ge 2 ] || die "--ttl needs a value"; TTL_OVERRIDE="$2"; shift 2 ;;
+    --task-id)    [ $# -ge 2 ] || die "--task-id needs a value"; CLAIM_TASK_ID="$2"; shift 2 ;;
+    --branch)     [ $# -ge 2 ] || die "--branch needs a value"; CLAIM_BRANCH="$2"; shift 2 ;;
+    --agent)      [ $# -ge 2 ] || die "--agent needs a value"; CLAIM_AGENT="$2"; shift 2 ;;
     --config)     [ $# -ge 2 ] || die "--config needs a path"; AGENTWS_CONFIG="$2"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *)            ARGS+=("$1"); shift ;;
@@ -156,10 +183,7 @@ fi
 
 config_load
 
-[ -n "$TTL_OVERRIDE" ] && AGENTWS_TTL_HOURS="$TTL_OVERRIDE"
-case "$AGENTWS_TTL_HOURS" in
-  ''|*[!0-9]*) die "ttl must be a non-negative integer, got '$AGENTWS_TTL_HOURS'" ;;
-esac
+case "$TTL_OVERRIDE" in ''|*[!0-9]*) [ -z "$TTL_OVERRIDE" ] || die "ttl must be a non-negative integer, got '$TTL_OVERRIDE'" ;; esac
 
 [ -d "$AGENTWS_ROOT" ] || die "workspace root $AGENTWS_ROOT does not exist"
 
@@ -173,6 +197,9 @@ case "$CMD" in
   claim)    envelope_run claim   cmd_claim   "$@" ;;
   sync)     envelope_run sync    cmd_sync    "$@" ;;
   prune)    envelope_run prune   cmd_prune   "$@" ;;
+  refresh)  envelope_run refresh cmd_refresh "$@" ;;
+  recycle)  envelope_run recycle cmd_recycle "$@" ;;
+  'done')   envelope_run done    cmd_done    "$@" ;;
   create)   envelope_run create  cmd_create  "$@" ;;
   destroy)  envelope_run destroy cmd_destroy "$@" ;;
   doctor)   envelope_run doctor  cmd_doctor  "$@" ;;

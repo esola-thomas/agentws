@@ -16,7 +16,7 @@
 #   - Providers read ONLY the AGENTWS_P_* namespace, never the config file.
 #   - Forge-agnostic: plain git porcelain only, never a hosting-provider API.
 #
-# The contract is eight functions: api_version plus the seven hooks below.
+# The contract is eleven functions: api_version plus the ten hooks below.
 
 # VALUE. Required. Core dies on a mismatch with AGENTWS_PROVIDER_API.
 provider_api_version() { printf '1'; }
@@ -46,3 +46,12 @@ provider_commands()     { printf ''; }
 
 # ACTION: extra `export K=V` lines appended to `agentws claim --print-env`.
 provider_claim_env()    { :; }
+
+# VALUE: ready, missing, or stale. Checks must be fast enough for status.
+provider_env_check()    { printf 'ready'; }
+
+# ACTION: provision or repair the slot's project environment.
+provider_env_setup()    { :; }
+
+# VALUE: short command or instruction returned to a claimed worker.
+provider_bootstrap_hint() { printf ''; }
