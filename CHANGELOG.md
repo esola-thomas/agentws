@@ -8,6 +8,15 @@ All notable changes to this project are recorded here. Format follows
 
 ### Added
 
+- `AGENTS.md`: the harness-neutral agent contract (claim, bootstrap, branch
+  off `origin/<base>`, recycle; refusals are final). `CLAUDE.md` imports it.
+- `skills/agentws/`: a Claude Code skill with the same ritual plus
+  headless-worker rules; `install.sh` links it into `~/.claude/skills`.
+- MCP `instructions` now carry the lifecycle and the never-do list, so an
+  agent that only sees the tool list still knows to claim before editing.
+- `provider_path:` config key: extra directories searched for `<provider>.sh`
+  before the bundled `providers/`, so a private, project-specific provider can
+  live next to its `.agentws.yml` instead of inside this repo.
 - Safe phantom-dirty detection, `refresh`, and opt-in claim-time auto-refresh.
 - Provider environment check, setup, and bootstrap hint hooks, plus
   environment-aware status, claim preference, `create --with-env`, and

@@ -90,7 +90,7 @@ config_parse() { # config_parse <file>
 
   # Raw values, expanded after the whole file is read.
   local r_version="" r_root="" r_top="" r_provider="" r_default_branch=""
-  local r_slots="" r_fmt="" r_ref="" r_excl="" r_ttl="" r_lockdir=""
+  local r_slots="" r_fmt="" r_ref="" r_excl="" r_ttl="" r_lockdir="" r_provider_path=""
   local r_auto_refresh="" r_auto_release="" r_auto_release_minutes=""
 
   while IFS= read -r raw || [ -n "$raw" ]; do
@@ -160,6 +160,7 @@ config_parse() { # config_parse <file>
       root)               r_root="$(config_scalar "$val")" ;;
       top)                r_top="$(config_scalar "$val")" ;;
       provider)           r_provider="$(config_scalar "$val")" ;;
+      provider_path)      r_provider_path="$(config_scalar "$val")" ;;
       default_branch)     r_default_branch="$(config_scalar "$val")" ;;
       slot_name_format)   r_fmt="$(config_scalar "$val")" ;;
       reference_slot)     r_ref="$(config_scalar "$val")" ;;
@@ -223,6 +224,16 @@ config_parse() { # config_parse <file>
 
   AGENTWS_ROOT="$(config_canon "$(config_expand "$r_root")")"
   AGENTWS_LOCK_DIR="$(config_canon "$(config_expand "${r_lockdir:-{root\}/.agentws/locks}")")"
+
+  # provider_path: space-separated directories searched for <provider>.sh before
+  # the bundled providers/. Lets a private, project-specific provider live next
+  # to its config instead of inside the agentws checkout. An environment
+  # AGENTWS_PROVIDER_PATH still wins over it.
+  AGENTWS_CONFIG_PROVIDER_PATH=""
+  if [ -n "$r_provider_path" ]; then
+    AGENTWS_CONFIG_PROVIDER_PATH="$(config_expand "$r_provider_path")"
+    AGENTWS_PROVIDER_PATH="${AGENTWS_PROVIDER_PATH:+$AGENTWS_PROVIDER_PATH }$AGENTWS_CONFIG_PROVIDER_PATH"
+  fi
 
   # provider_opts values may reference {root}/{top}/{user}; expand in place.
   local k
@@ -302,6 +313,7 @@ cmd_config() {
     printf 'root                 %s\n' "$AGENTWS_ROOT"
     printf 'top                  %s\n' "$AGENTWS_TOP"
     printf 'provider             %s\n' "$AGENTWS_PROVIDER"
+    printf 'provider_path        %s\n' "$AGENTWS_CONFIG_PROVIDER_PATH"
     printf 'default_branch       %s\n' "$AGENTWS_DEFAULT_BRANCH"
     printf 'slots                %s\n' "$AGENTWS_SLOTS"
     printf 'slot_name_format     %s\n' "$AGENTWS_SLOT_NAME_FORMAT"
@@ -324,9 +336,9 @@ cmd_config() {
   for k in $AGENTWS_P_KEYS; do
     parts+=("$(eval "printf '%s:%s' \"\$(jstr \"\$k\")\" \"\$(jstr \"\$AGENTWS_P_${k}\")\"")")
   done
-  printf '{"config_file":%s,"version":1,"root":%s,"top":%s,"provider":%s,"default_branch":%s,"slots":[%s],"slot_name_format":%s,"reference_slot":%s,"exclude_from_claim":[%s],"ttl_hours":%s,"auto_refresh":%s,"auto_release":%s,"auto_release_minutes":%s,"lock_dir":%s,"provider_opts":{%s}}\n' \
+  printf '{"config_file":%s,"version":1,"root":%s,"top":%s,"provider":%s,"provider_path":%s,"default_branch":%s,"slots":[%s],"slot_name_format":%s,"reference_slot":%s,"exclude_from_claim":[%s],"ttl_hours":%s,"auto_refresh":%s,"auto_release":%s,"auto_release_minutes":%s,"lock_dir":%s,"provider_opts":{%s}}\n' \
     "$(jstr "$AGENTWS_CONFIG_FILE")" "$(jstr "$AGENTWS_ROOT")" "$(jstr "$AGENTWS_TOP")" \
-    "$(jstr "$AGENTWS_PROVIDER")" "$(jstr "$AGENTWS_DEFAULT_BRANCH")" \
+    "$(jstr "$AGENTWS_PROVIDER")" "$(jstr "$AGENTWS_CONFIG_PROVIDER_PATH")" "$(jstr "$AGENTWS_DEFAULT_BRANCH")" \
     "$(jjoin "${sl[@]+"${sl[@]}"}")" "$(jstr "$AGENTWS_SLOT_NAME_FORMAT")" \
     "$(jstr "$AGENTWS_REFERENCE_SLOT")" "$(jjoin "${ex[@]+"${ex[@]}"}")" \
     "$(jnum "$AGENTWS_TTL_HOURS")" "$(jbool "$AGENTWS_AUTO_REFRESH")" \

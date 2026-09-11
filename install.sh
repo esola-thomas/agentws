@@ -16,6 +16,8 @@ fi
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PREFIX="${AGENTWS_PREFIX:-$HOME/.local/bin}"
+SKILLS_DIR="${AGENTWS_SKILLS_DIR:-$HOME/.claude/skills}"
+SKILL_LINK="$SKILLS_DIR/agentws"
 MODE=install
 
 for arg in "$@"; do
@@ -50,6 +52,11 @@ check)
       say "  $n not installed"
     fi
   done
+  if [ -L "$SKILL_LINK" ]; then
+    say "  claude skill -> $(readlink "$SKILL_LINK")"
+  else
+    say "  claude skill not installed"
+  fi
   exit 0
   ;;
 uninstall)
@@ -61,6 +68,9 @@ uninstall)
       warn "$t is not a symlink, leaving it alone"
     fi
   done
+  if [ -L "$SKILL_LINK" ]; then
+    rm -- "$SKILL_LINK" && say "removed $SKILL_LINK"
+  fi
   exit 0
   ;;
 esac
@@ -84,6 +94,17 @@ link() { # link <target> <name>
 
 link "$SRC/bin/agentws"      agentws
 link "$SRC/mcp/agentws-mcp"  agentws-mcp
+
+# Claude Code skill: only when the user has a Claude Code home. Other harnesses
+# read AGENTS.md directly and need nothing linked.
+if [ -d "$(dirname "$SKILLS_DIR")" ]; then
+  mkdir -p "$SKILLS_DIR" 2>/dev/null || true
+  if [ -e "$SKILL_LINK" ] && [ ! -L "$SKILL_LINK" ]; then
+    warn "$SKILL_LINK exists and is not a symlink, leaving it alone"
+  else
+    ln -sfn "$SRC/skills/agentws" "$SKILL_LINK" && say "linked $SKILL_LINK -> $SRC/skills/agentws"
+  fi
+fi
 
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
