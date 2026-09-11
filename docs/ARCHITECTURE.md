@@ -170,7 +170,9 @@ auditable without reading the parser.
 
 Paths get `~/` expanded and the placeholders `{root}`, `{top}`, `{slot}`,
 `{user}` substituted, then `root` and `lock_dir` are canonicalised with
-`pwd -P`. Canonicalisation matters: two symlinked paths to one physical checkout
+`pwd -P`. `provider_path` is expanded the same way and prepended to the
+provider search path (after any `AGENTWS_PROVIDER_PATH` from the environment),
+so a project can keep a private provider beside its config. Canonicalisation matters: two symlinked paths to one physical checkout
 must not produce two different lock files.
 
 `auto_refresh` enables safe claim-time phantom recovery. `auto_release` and

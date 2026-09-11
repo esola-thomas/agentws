@@ -54,6 +54,15 @@ Every command takes `--json` and prints exactly one envelope line on stdout:
 Human narrative always goes to stderr, so `--json` output is safe to pipe into
 `jq` without filtering.
 
+## For coding agents
+
+[AGENTS.md](AGENTS.md) is the contract an AI agent follows on a machine with a
+slot farm: claim, bootstrap from the claim's `bootstrap_hint`, branch off
+`origin/<base>`, work, `recycle`. It is harness-neutral. Claude Code
+additionally gets the `/agentws` skill (`skills/agentws/`, linked by
+`install.sh` into `~/.claude/skills`) and the MCP server below; Codex and
+other tools read `AGENTS.md` and call the CLI.
+
 ## Forge-agnostic
 
 `agentws` uses plain git porcelain only: `fetch`, `branch`, `status`,
@@ -80,7 +89,10 @@ or write the lock directory: locking is core-only.
 | `fullclone` | An independent `git clone` per slot | When slots need untracked per-slot state, or separate build trees, that a worktree cannot carry. |
 
 Write your own by copying `providers/_contract.sh`, implementing the hooks you
-need, and naming it in `provider:` in your config. Project-aware providers can
+need, and naming it in `provider:` in your config. A provider that belongs to
+one project (private setup scripts, submodule lists) can live outside this
+checkout: set `provider_path: "{root}/.agentws/providers"` and put
+`<name>.sh` there; those directories are searched before the bundled ones. Project-aware providers can
 also implement `provider_env_check`, `provider_env_setup`, and
 `provider_bootstrap_hint`. There is no plugin registry and nothing is downloaded.
 
@@ -116,7 +128,7 @@ Only a human at the CLI can pass `--force`.
 |---|---|---|
 | Claude Code | Verified working | Merge `mcp/claude_code.example.json` into `~/.claude.json` |
 | GitHub Copilot CLI | Verified working | Merge `mcp/copilot.example.json` into its MCP config |
-| Codex | Untested | Use the CLI fallback below |
+| Codex | CLI via `AGENTS.md` | Reads `AGENTS.md` at the repo root; runs the CLI fallback below |
 | Cursor | Untested | Use the CLI fallback below |
 | Aider | Untested | Use the CLI fallback below |
 | Anything else | Untested | Use the CLI fallback below |
