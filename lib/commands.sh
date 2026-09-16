@@ -209,6 +209,41 @@ _env_setup_slot() { # _env_setup_slot <slot>
   return 0
 }
 
+# ------------------------------------------------------- post-reset hook
+# Both repair paths (recycle and refresh) end by moving a slot's working tree
+# and must then bring the rest of the slot to the same revision. Shared so the
+# stdout discipline and the post-condition cannot drift apart.
+#
+# Under --json the hook's output goes to stderr: envelope_run captures a command
+# function's stdout as `data`, so one chatty provider line would replace the
+# whole payload with null and nobody would see an error.
+#
+# Sets SLOT_RESET_DETAIL and returns 7 on failure. The caller decides how to
+# report it; the caller still holds the lock at this point and must keep it.
+SLOT_RESET_DETAIL=""
+
+_slot_reset_hook() { # _slot_reset_hook <slot> <abs-path> <ref>
+  local s="$1" d="$2" ref="$3" rc=0
+  SLOT_RESET_DETAIL=""
+  if [ "${JSON:-0}" -eq 1 ]; then
+    provider_slot_reset "$s" "$d" "$ref" >&2 || rc=$?
+  else
+    provider_slot_reset "$s" "$d" "$ref" || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    SLOT_RESET_DETAIL="provider $AGENTWS_PROVIDER could not sync the slot to $ref (rc $rc)"
+    return 7
+  fi
+  # Verify rather than trust: a provider that returns 0 without doing the work
+  # would otherwise release a slot that status reports as dirty. Only a
+  # populated submodule counts; an uninitialised one is not stale and never was.
+  if [ "${DRY:-0}" -ne 1 ] && slot_submodule_stale "$s"; then
+    SLOT_RESET_DETAIL="submodules still do not match $ref, so the slot would not be claimable"
+    return 7
+  fi
+  return 0
+}
+
 # ------------------------------------------------------------------ refresh
 REFRESH_STATUS=""
 REFRESH_DETAIL=""
@@ -239,6 +274,20 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
     return 0
   fi
   if [ "$state" != "phantom-dirty" ]; then
+    # A slot whose only dirt is a submodule lagging its gitlink is not phantom
+    # dirt: the index already agrees with origin/<default>, only the submodule
+    # checkout lags. There is no phantom base commit to name, and the repair is
+    # the hook rather than a reset.
+    if slot_submodule_only_dirt "$s"; then
+      _slot_reset_hook "$s" "$d" "origin/$AGENTWS_DEFAULT_BRANCH" \
+        || { REFRESH_DETAIL="$SLOT_RESET_DETAIL"; return 7; }
+      if [ "${DRY:-0}" -eq 1 ]; then
+        REFRESH_STATUS="would-refresh"; REFRESH_DETAIL="submodules lag origin/$AGENTWS_DEFAULT_BRANCH"
+      else
+        REFRESH_STATUS="refreshed"; REFRESH_DETAIL="synced submodules to origin/$AGENTWS_DEFAULT_BRANCH"
+      fi
+      return 0
+    fi
     REFRESH_DETAIL="dirty content is not fully explained by a default-branch advance"
     return 8
   fi
@@ -247,6 +296,9 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
     REFRESH_DETAIL="git reset failed"
     return 8
   fi
+  # The reset moved the gitlinks; it did not move the submodule working trees.
+  _slot_reset_hook "$s" "$d" "origin/$AGENTWS_DEFAULT_BRANCH" \
+    || { REFRESH_DETAIL="$SLOT_RESET_DETAIL"; return 7; }
   if [ "${DRY:-0}" -eq 1 ]; then
     REFRESH_STATUS="would-refresh"; REFRESH_DETAIL="verified phantom dirt"
   else
@@ -285,7 +337,7 @@ cmd_refresh() {
 # ------------------------------------------------------------------ recycle
 cmd_recycle() {
   [ $# -ge 1 ] || { printf 'recycle needs a slot\n' >&2; return 2; }
-  local s d current target delete_branch untracked tracked_dirty=0 deleted="" released=0 rc=0
+  local s d current target delete_branch untracked sub_untracked tracked_dirty=0 deleted="" released=0 rc=0
   local removed=()
   s="$(slot_resolve "$1")" || { printf 'unknown slot %s\n' "$1" >&2; return 6; }
   slot_is_reference "$s" && { printf '%s is the reference slot; refusing to recycle it\n' "$(slot_name "$s")" >&2; return 2; }
@@ -305,7 +357,25 @@ cmd_recycle() {
     printf '%s is unavailable in %s\n' "$target" "$d" >&2; return 8;
   }
 
+  # Refused before anything is touched, and named, because an edit inside a
+  # submodule is invisible in the parent's own diff and shows up only as one
+  # ' M <path>' line that reads like a moved pointer.
+  if slot_submodule_modified "$s"; then
+    printf '%s has uncommitted changes inside a submodule that recycle will not discard\n' \
+      "$(slot_name "$s")" >&2
+    return 8
+  fi
+
+  # Untracked files inside a submodule are invisible to `ls-files --others` but
+  # still make the parent dirty, so they go through the same consent gate.
   untracked="$(slot_untracked "$s")"
+  sub_untracked="$(slot_submodule_untracked "$s")"
+  if [ -n "$untracked" ] && [ -n "$sub_untracked" ]; then
+    untracked="$untracked
+$sub_untracked"
+  elif [ -n "$sub_untracked" ]; then
+    untracked="$sub_untracked"
+  fi
   if [ -n "$untracked" ] && [ "${CLEAN_UNTRACKED:-0}" -ne 1 ]; then
     printf '%s has untracked files; rerun with --clean-untracked to remove them:\n%s\n' \
       "$(slot_name "$s")" "$untracked" >&2
@@ -316,10 +386,19 @@ cmd_recycle() {
 $untracked
 EOF
     run git -C "$d" clean -fd -- >/dev/null || { printf 'could not clean untracked files in %s\n' "$d" >&2; return 8; }
+    if [ -f "$d/.gitmodules" ]; then
+      # `git clean` does not descend into a submodule, so it needs its own pass.
+      run git -C "$d" submodule --quiet foreach --recursive 'git clean -fd' >/dev/null \
+        || { printf 'could not clean untracked files inside submodules in %s\n' "$d" >&2; return 8; }
+    fi
   fi
 
-  git -C "$d" diff --quiet --ignore-submodules=none -- 2>/dev/null || tracked_dirty=1
-  git -C "$d" diff --cached --quiet --ignore-submodules=none -- 2>/dev/null || tracked_dirty=1
+  # Superproject changes are user work and are refused. A gitlink that merely
+  # points elsewhere is NOT: the post-reset hook restores it, and refusing it
+  # here is what left a slot the old recycle had already broken impossible to
+  # recycle again.
+  git -C "$d" diff --quiet --ignore-submodules=all -- 2>/dev/null || tracked_dirty=1
+  git -C "$d" diff --cached --quiet --ignore-submodules=all -- 2>/dev/null || tracked_dirty=1
   if [ "$tracked_dirty" -eq 1 ] && ! slot_phantom_base "$s" >/dev/null; then
     printf '%s has tracked changes that recycle will not discard\n' "$(slot_name "$s")" >&2
     return 8
@@ -346,6 +425,15 @@ EOF
     fi
   fi
   [ "$rc" -eq 0 ] || return "$rc"
+
+  # The parent is on the default branch now, but a checkout does not move a
+  # submodule working tree. Let the provider bring the rest of the slot to the
+  # same revision while the lock is still held: everything below this point
+  # hands the slot to someone else.
+  if ! _slot_reset_hook "$s" "$d" "$target"; then
+    printf '%s: %s; lock kept\n' "$(slot_name "$s")" "$SLOT_RESET_DETAIL" >&2
+    return 7
+  fi
 
   if [ -f "$(lock_file "$s")" ]; then
     if [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || return 4

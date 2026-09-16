@@ -55,7 +55,7 @@ thing that varies.
 
 ### The provider contract
 
-Eleven functions. `providers/_contract.sh` supplies a default for each, so a
+Twelve functions. `providers/_contract.sh` supplies a default for each, so a
 provider only implements what it actually changes.
 
 | Hook | Purpose | Default |
@@ -66,11 +66,21 @@ provider only implements what it actually changes.
 | `provider_slot_create <slot> <path>` | Materialise a slot. | Dies with a clear message |
 | `provider_slot_destroy <slot> <path>` | Remove a slot. Core has already checked the lock. | Dies with a clear message |
 | `provider_slot_doctor <slot> <path>` | Extra health checks. | Prints one OK line |
+| `provider_slot_reset <slot> <path> <ref>` | Bring state the parent checkout does not carry, such as submodule working trees, to `<ref>`. Called by `recycle` and `refresh` while the lock is still held. | Syncs submodules when the slot has a `.gitmodules`, else no-op |
 | `provider_commands` | Space-separated extra subcommand names. | Empty |
 | `provider_claim_env <slot> <path>` | Extra shell assignments for `claim --print-env`. | No-op |
 | `provider_env_check <slot> <path>` | Print `ready`, `missing`, or `stale`. Must be cheap enough for status. | `ready` |
 | `provider_env_setup <slot> <path>` | Provision or repair the project environment. | No-op |
 | `provider_bootstrap_hint <slot> <path>` | Short instruction returned to a claimed worker. | Empty |
+
+`provider_slot_reset` exists because `git checkout` and `git reset` move a
+gitlink but not the submodule working tree underneath it. A slot returned to
+the default branch with its submodules still on the prior branch's commits is
+dirty by `slot_dirty_count`, so it is not claimable, and no amount of retrying
+`recycle` fixes it. A non-zero rc from the hook fails the command and the lock
+is **not** released: a slot is never handed on in a state `status` calls dirty.
+`recycle` then verifies the outcome rather than trusting it, so a provider that
+returns 0 without doing the work still fails.
 
 `provider_slot_exists` is a hook rather than a core `-d "$d/.git"` test because
 not every provider materialises a `.git` at all. A worktree writes a `.git`

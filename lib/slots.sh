@@ -97,6 +97,68 @@ slot_phantom_base() { # slot_phantom_base <slot>
   return 1
 }
 
+# ------------------------------------------------------------- submodules
+# `git status --porcelain` collapses everything below a submodule into one
+# ' M <path>' line, so a slot can be dirty and unclaimable for three unrelated
+# reasons that need three different answers. These probes tell them apart. Each
+# is a no-op on a repo without submodules, which is why every one of them opens
+# with the .gitmodules test.
+
+# PREDICATE: a populated submodule is checked out at something other than the
+# gitlink this slot's index records. `git submodule status` marks exactly that
+# with '+'. An uninitialised submodule is '-' and is deliberately NOT stale: a
+# slot that never populated its submodules is clean and claimable today, and
+# recycle must not start cloning for it. No `grep -q`: under pipefail an early
+# grep exit can SIGPIPE git and turn a match into rc 141.
+slot_submodule_stale() { # slot_submodule_stale <slot>
+  local d
+  d="$(provider_slot_path "$1")"
+  [ -f "$d/.gitmodules" ] || return 1
+  [ -n "$(git -C "$d" submodule status --recursive 2>/dev/null | grep '^+' || true)" ]
+}
+
+# PREDICATE: a submodule working tree carries uncommitted tracked changes. That
+# is someone's work and recycle refuses it. Note --ignore-submodules=dirty does
+# NOT answer this: it still reports a moved gitlink, so it cannot distinguish a
+# pointer change from an edit. foreach can.
+slot_submodule_modified() { # slot_submodule_modified <slot>
+  local d
+  d="$(provider_slot_path "$1")"
+  [ -f "$d/.gitmodules" ] || return 1
+  ! git -C "$d" submodule --quiet foreach --recursive 'git diff --quiet HEAD' >/dev/null 2>&1
+}
+
+# Untracked paths inside populated submodules, as <submodule>/<path>. Neither
+# `ls-files --others` nor `git clean` descends into a submodule, so these are
+# invisible to recycle's untracked gate while still counting as dirt in the
+# parent. $displaypath is expanded by the shell foreach spawns, not by us, which
+# is why the script is single-quoted.
+slot_submodule_untracked() { # slot_submodule_untracked <slot> -> paths, one per line
+  local d
+  d="$(provider_slot_path "$1")"
+  [ -f "$d/.gitmodules" ] || return 0
+  # shellcheck disable=SC2016  # $displaypath is foreach's, expanded by the shell it spawns
+  git -C "$d" submodule --quiet foreach --recursive \
+    'git ls-files --others --exclude-standard | sed "s|^|$displaypath/|"' 2>/dev/null || true
+}
+
+# PREDICATE: every difference in this slot is a submodule checkout lagging its
+# gitlink. Nothing untracked, no tracked change outside a gitlink, no edit
+# inside a submodule: drift the recorded gitlinks repair, not work anyone did.
+# Deliberately NOT a fourth slot_dirty_state value; that vocabulary
+# (clean|phantom-dirty|dirty) is a published part of the status JSON.
+slot_submodule_only_dirt() { # slot_submodule_only_dirt <slot>
+  local d
+  d="$(provider_slot_path "$1")"
+  [ -f "$d/.gitmodules" ] || return 1
+  [ -z "$(slot_untracked "$1")" ] || return 1
+  [ -z "$(slot_submodule_untracked "$1")" ] || return 1
+  git -C "$d" diff --quiet --ignore-submodules=all -- 2>/dev/null || return 1
+  git -C "$d" diff --cached --quiet --ignore-submodules=all -- 2>/dev/null || return 1
+  slot_submodule_modified "$1" && return 1
+  slot_submodule_stale "$1"
+}
+
 slot_dirty_state() { # slot_dirty_state <slot> -> clean|phantom-dirty|dirty
   if [ "$(slot_dirty_count "$1")" = "0" ]; then
     printf 'clean'

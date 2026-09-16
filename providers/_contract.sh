@@ -16,7 +16,7 @@
 #   - Providers read ONLY the AGENTWS_P_* namespace, never the config file.
 #   - Forge-agnostic: plain git porcelain only, never a hosting-provider API.
 #
-# The contract is eleven functions: api_version plus the ten hooks below.
+# The contract is twelve functions: api_version plus the eleven hooks below.
 
 # VALUE. Required. Core dies on a mismatch with AGENTWS_PROVIDER_API.
 provider_api_version() { printf '1'; }
@@ -38,6 +38,25 @@ provider_slot_destroy() { die "provider '$AGENTWS_PROVIDER' cannot destroy slots
 
 # ACTION: <slot> <abs-path>. Prints "OK|WARN|FAIL <check> <detail>" lines.
 provider_slot_doctor()  { printf 'OK checkout %s\n' "${2-}"; }
+
+# ACTION: <slot> <abs-path> <ref>. Core has moved the slot's working tree to
+# <ref> and still holds the lock. Bring subordinate state the parent checkout
+# does not carry into agreement with <ref>. Called by recycle and by refresh.
+# A non-zero rc fails that command and the lock is NOT released, so a slot is
+# never handed on in a state status would call dirty.
+#
+# The default exists because `git checkout` and `git reset` move the gitlink but
+# not the submodule working tree, which leaves the parent permanently dirty and
+# the slot unclaimable. `sync` first, so a submodule whose URL changed on <ref>
+# is fetched from the right remote. `--checkout` so a submodule.<name>.update of
+# merge, rebase, or none cannot turn a reset into a merge. Never --force:
+# uncommitted work inside a submodule must fail loudly, not be discarded.
+provider_slot_reset() { # <slot> <abs-path> <ref>
+  local d="${2-}"
+  [ -n "$d" ] && [ -f "$d/.gitmodules" ] || return 0
+  run git -C "$d" submodule sync --recursive --quiet || return 1
+  run git -C "$d" submodule update --init --recursive --checkout --quiet || return 1
+}
 
 # VALUE: space-separated extra subcommand names. Core parses the string with
 # case; bash 3.2 has neither associative arrays nor a usable callback registry.

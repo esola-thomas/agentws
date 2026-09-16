@@ -79,7 +79,7 @@ manager hold credentials.
 
 ## Providers
 
-A provider decides what a slot physically is. It implements a 7-function
+A provider decides what a slot physically is. It implements a 12-function
 contract and is a single `.sh` file under `providers/`. Providers may not read
 or write the lock directory: locking is core-only.
 
@@ -93,8 +93,10 @@ need, and naming it in `provider:` in your config. A provider that belongs to
 one project (private setup scripts, submodule lists) can live outside this
 checkout: set `provider_path: "{root}/.agentws/providers"` and put
 `<name>.sh` there; those directories are searched before the bundled ones. Project-aware providers can
-also implement `provider_env_check`, `provider_env_setup`, and
-`provider_bootstrap_hint`. There is no plugin registry and nothing is downloaded.
+also implement `provider_env_check`, `provider_env_setup`,
+`provider_bootstrap_hint`, and `provider_slot_reset`, which runs after `recycle`
+or `refresh` has moved a slot back to the default branch and is what keeps
+submodules, or anything else the parent checkout does not carry, in step. There is no plugin registry and nothing is downloaded.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and `providers/_contract.sh` for the contract.
 

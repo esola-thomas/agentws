@@ -63,6 +63,10 @@ recycling; pass `--clean-untracked` only for files you created.
   else's in-flight task. Leave it.
 - Lock liveness is tied to `AGENTWS_PID`. If you fork a subprocess to do the
   work, the lock still belongs to the shell you exported.
+- Submodules left on your branch's commits are not your cleanup. `recycle` and
+  `refresh` resync them to the revision they reset to. If one cannot be
+  restored, the command fails and keeps your lock instead of handing on a dirty
+  slot; that refusal is final like any other.
 
 ## Orchestrator vs worker
 
