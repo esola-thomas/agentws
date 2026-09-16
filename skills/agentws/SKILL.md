@@ -65,8 +65,9 @@ agentws recycle "$AGENTWS_SLOT"     # fetch, reset to origin/<default>, drop bra
 agentws refresh                     # heal phantom-dirty idle slots the merge created
 ```
 
-Submodule pointer merges also need `git submodule update --init` in every
-slot, or all of them show one file dirty.
+Submodule pointer merges are handled: `recycle` and `refresh` resync submodules
+to the revision they reset to. If one cannot be restored, the command fails and
+keeps the lock rather than handing on a dirty slot.
 
 ## Never
 

@@ -26,6 +26,32 @@ All notable changes to this project are recorded here. Format follows
   opt-in finished-slot auto-release.
 - MCP tools for refresh, prune, create, recycle, and done, with claim metadata
   and environment options.
+- `provider_slot_reset <slot> <path> <ref>`, the twelfth contract function.
+  Core calls it after `recycle` or `refresh` has moved a slot's working tree,
+  while the lock is still held. The default syncs submodules when the slot has
+  a `.gitmodules` and is a no-op otherwise, so providers that do nothing keep
+  working and the bundled ones gain the fix without a private provider.
+
+### Changed
+
+- `recycle` no longer treats a submodule gitlink that merely points elsewhere as
+  tracked changes it would discard, because the post-reset hook restores it. An
+  uncommitted change *inside* a submodule is still refused, now named as such
+  and before anything is touched, and untracked files inside a submodule join
+  the existing `--clean-untracked` gate.
+- `refresh` heals a slot whose only dirt is a submodule lagging its gitlink.
+  That is shared-ref drift, not work, but it could never be proved phantom.
+
+### Fixed
+
+- `recycle` reported success and released the lock while leaving a slot dirty
+  and non-claimable, whenever the task branch and the default branch recorded
+  different submodule commits: the parent reset moved the gitlink but not the
+  submodule working tree, and the next `recycle` then refused the slot outright.
+  Recycle now resyncs, verifies the slot really is claimable before releasing,
+  and fails with `EPROVIDER` keeping the lock if it is not. ([#9])
+
+[#9]: https://github.com/esola-thomas/agentws/issues/9
 
 ## [0.1.0] - 2026-08-10
 
