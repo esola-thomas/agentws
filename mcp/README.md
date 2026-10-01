@@ -90,23 +90,27 @@ path into the install, so `agentws update` upgrades every tool at once:
 
 | Tool | Registered with |
 |---|---|
-| Claude Code | `claude mcp add agentws --scope user --env AGENTWS_OWNER_PREFIX=claude -- <path>` |
-| Codex CLI | `codex mcp add agentws --env AGENTWS_OWNER_PREFIX=codex -- <path>` |
+| Claude Code | `claude mcp add agentws --scope user --env AGENTWS_OWNER_PREFIX=claude -- <bash> <path>` |
+| Codex CLI | `codex mcp add agentws --env AGENTWS_OWNER_PREFIX=codex -- <bash> <path>` |
 | Copilot CLI | `mcpServers.agentws` in `~/.copilot/mcp-config.json` (`type: local`) |
 | Cursor | `mcpServers.agentws` in `~/.cursor/mcp.json` (`type: stdio`) |
 | Gemini CLI | `mcpServers.agentws` in `~/.gemini/settings.json` |
 
+`<bash>` is the absolute path of a bash 4.1+, and the JSON entries use it as
+`command` with `args: [<path>]`. Setup takes the first of `bash` on PATH,
+`/opt/homebrew/bin/bash`, and `/usr/local/bin/bash` that is 4.1 or newer.
+The path is absolute because a tool launched from a GUI gets a minimal PATH
+(`/usr/bin:/bin`) and would otherwise run the server with macOS bash 3.2. If
+no candidate qualifies, setup registers no server and says so.
+
+`agentws setup --check` shows `mcp:stale` for an entry that does not run this
+server with that bash, such as one written by an older setup. Run
+`agentws setup` to rewrite it.
+
 The prefix shown is the default. Re-running setup keeps the
 `AGENTWS_OWNER_PREFIX` already on an agentws entry, because changing it
-orphans the locks held under the old prefix.
-
-The server needs bash 4.1+. Setup probes `bash` on PATH, then
-`/opt/homebrew/bin/bash`, then `/usr/local/bin/bash`. If the PATH bash
-qualifies, `<path>` is the server itself, as above. If only an absolute
-candidate does, the command is that bash and the server path is its argument
-(`-- /opt/homebrew/bin/bash <path>`, or `command` plus `args` in the JSON
-files), so the server does not depend on the tool's PATH. If none does, setup
-registers no server and says so.
+orphans the locks held under the old prefix. If the prefix is present but
+setup cannot read it, setup leaves that tool's entry unchanged and says so.
 
 No `AGENTWS_CONFIG` is needed: the server finds the farm from its working
 directory, or falls back to the default farm set by `agentws init` or
@@ -115,7 +119,7 @@ directory, or falls back to the default farm set by `agentws init` or
 For any other MCP client, the entry is:
 
 ```json
-{"mcpServers":{"agentws":{"command":"/home/you/.local/share/agentws/mcp/agentws-mcp","env":{"AGENTWS_OWNER_PREFIX":"mytool"}}}}
+{"mcpServers":{"agentws":{"command":"/opt/homebrew/bin/bash","args":["/home/you/.local/share/agentws/mcp/agentws-mcp"],"env":{"AGENTWS_OWNER_PREFIX":"mytool"}}}}
 ```
 
 Smoke test: have the agent call `workspace_status`, then run
