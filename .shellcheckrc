@@ -1,0 +1,3 @@
+# Globals are set in bin/agentws and read in lib/; shellcheck cannot see across files.
+# SC1010: the quoted 'done' case label. SC2088: config.sh matches a literal ~/ on purpose.
+disable=SC1091,SC2034,SC1010,SC2088

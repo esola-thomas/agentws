@@ -1,121 +1,133 @@
 #!/usr/bin/env bash
-# install.sh - symlink agentws and its MCP server onto PATH. No build step.
+# install.sh - install agentws and wire it into your AI coding tools.
 #
-# Usage:
-#   ./install.sh                  install into ~/.local/bin
-#   ./install.sh /usr/local/bin   install into a chosen directory
-#   ./install.sh --uninstall      remove the symlinks
-#   ./install.sh --check          report what is installed, change nothing
+#   curl -fsSL https://raw.githubusercontent.com/esola-thomas/agentws/main/install.sh | bash
+#
+# Piped, it clones agentws into ~/.local/share/agentws (a managed install that
+# updates itself daily). Run from a checkout, it links that checkout instead
+# (a dev install that never updates itself).
+#
+# Options:
+#   --no-setup      link the CLI only; skip wiring AI harnesses
+#   --uninstall     remove harness wiring, links, and a managed install
+#   --check         report what is installed, change nothing
+# Environment:
+#   AGENTWS_HOME            managed install dir   (default ~/.local/share/agentws)
+#   AGENTWS_PREFIX          where links go        (default ~/.local/bin)
+#   AGENTWS_UPDATE_CHANNEL  stable (releases, default) or main
 
-set -uo pipefail
+# Everything runs from main, called on the last line, so a truncated download
+# executes nothing.
+main() {
+  set -uo pipefail
+  # The installer drives agentws itself; no background update may race it.
+  export AGENTWS_NO_AUTO_UPDATE=1
+  local repo="${AGENTWS_REPO:-https://github.com/esola-thomas/agentws.git}"
+  local home="${AGENTWS_HOME:-$HOME/.local/share/agentws}"
+  local prefix="${AGENTWS_PREFIX:-$HOME/.local/bin}"
+  local mode=install setup=1 src="" arg
 
-if [ -z "${BASH_VERSION:-}" ]; then
-  printf 'install.sh: this requires bash, not sh/dash. Run: bash install.sh\n' >&2
-  exit 1
-fi
+  for arg in "$@"; do
+    case "$arg" in
+      --uninstall) mode=uninstall ;;
+      --check)     mode=check ;;
+      --no-setup)  setup=0 ;;
+      -h|--help)   printf '%s\n' "Usage: install.sh [--no-setup|--uninstall|--check]  (see the header of install.sh)"; return 0 ;;
+      *)           err "unknown option $arg"; return 2 ;;
+    esac
+  done
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-PREFIX="${AGENTWS_PREFIX:-$HOME/.local/bin}"
-SKILLS_DIR="${AGENTWS_SKILLS_DIR:-$HOME/.claude/skills}"
-SKILL_LINK="$SKILLS_DIR/agentws"
-MODE=install
+  # Running from a checkout? Then that checkout is the install.
+  # Piped, BASH_SOURCE is the literal "main"; only a real install.sh counts.
+  if [ "$(basename "${BASH_SOURCE[0]:-}")" = install.sh ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    [ -x "$src/bin/agentws" ] || src=""
+  fi
 
-for arg in "$@"; do
-  case "$arg" in
-    --uninstall) MODE=uninstall ;;
-    --check)     MODE=check ;;
-    -h|--help)   sed -n '2,9p' "$0" | sed 's/^# \?//'; exit 0 ;;
-    -*)          printf 'install.sh: unknown option %s\n' "$arg" >&2; exit 2 ;;
-    *)           PREFIX="$arg" ;;
+  case "$mode" in
+    check)
+      if [ -L "$prefix/agentws" ]; then
+        say "agentws -> $(readlink "$prefix/agentws")"
+        "$prefix/agentws" version
+        "$prefix/agentws" setup --check
+      else
+        say "agentws is not installed in $prefix"
+      fi
+      return 0 ;;
+    uninstall)
+      if [ -x "$prefix/agentws" ]; then "$prefix/agentws" setup --remove all || true; fi
+      local n
+      for n in agentws agentws-mcp; do
+        [ -L "$prefix/$n" ] && rm -f "$prefix/$n" && say "removed $prefix/$n"
+      done
+      if [ -f "$home/.git/agentws-managed" ]; then
+        rm -rf "$home" && say "removed $home"
+      fi
+      local def="${XDG_CONFIG_HOME:-$HOME/.config}/agentws/default.yml"
+      [ -L "$def" ] && rm -f "$def"
+      rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/agentws"
+      return 0 ;;
   esac
-done
+
+  need git || return 1
+  need jq  || warn "jq not found: the CLI works, but the MCP server and harness setup need it"
+
+  if [ -z "$src" ]; then
+    src="$home"
+    if [ -f "$src/.git/agentws-managed" ]; then
+      say "updating $src"
+      [ -n "${AGENTWS_UPDATE_CHANNEL:-}" ] && \
+        printf 'channel=%s\n' "$AGENTWS_UPDATE_CHANNEL" > "$src/.git/agentws-managed"
+      "$src/bin/agentws" update || return 1
+    else
+      [ -e "$src" ] && { err "$src exists and is not an agentws install; set AGENTWS_HOME"; return 1; }
+      say "cloning agentws into $src"
+      mkdir -p "$(dirname "$src")" && git clone --quiet "$repo" "$src" || return 1
+      local tag
+      tag="$(git -C "$src" tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- - | head -1)"
+      if [ -n "$tag" ] && [ "${AGENTWS_UPDATE_CHANNEL:-stable}" = stable ]; then
+        git -C "$src" -c advice.detachedHead=false checkout --quiet --detach "$tag" || return 1
+      fi
+      printf 'channel=%s\n' "${AGENTWS_UPDATE_CHANNEL:-stable}" > "$src/.git/agentws-managed"
+    fi
+  else
+    say "dev install from $src (updates with git pull, not automatically)"
+  fi
+
+  mkdir -p "$prefix" || return 1
+  link "$src/bin/agentws" "$prefix/agentws" || return 1
+  link "$src/mcp/agentws-mcp" "$prefix/agentws-mcp" || return 1
+  case ":$PATH:" in
+    *":$prefix:"*) ;;
+    *) warn "$prefix is not on your PATH. Add to your shell profile: export PATH=\"$prefix:\$PATH\"" ;;
+  esac
+
+  if [ "$setup" -eq 1 ] && command -v jq >/dev/null 2>&1; then
+    say ""
+    "$src/bin/agentws" setup || warn "harness setup reported a problem; rerun: agentws setup"
+  fi
+
+  say ""
+  say "agentws $("$src/bin/agentws" version | sed 's/^agentws //') installed."
+  say "Next, inside the repo your agents work on:"
+  say "  agentws init        # creates a farm of 3 isolated checkouts next to it"
+}
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*" >&2; }
-die()  { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+err()  { printf 'ERROR %s\n' "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || { err "$1 not found on PATH"; return 1; }; }
 
-for f in "$SRC/bin/agentws" "$SRC/mcp/agentws-mcp"; do
-  [ -f "$f" ] || die "not found: $f (run install.sh from inside the agentws checkout)"
-done
-
-case "$MODE" in
-check)
-  say "source:  $SRC"
-  say "prefix:  $PREFIX"
-  for n in agentws agentws-mcp; do
-    t="$PREFIX/$n"
-    if [ -L "$t" ]; then
-      say "  $n -> $(readlink "$t")"
-    elif [ -e "$t" ]; then
-      say "  $n present but is not a symlink"
-    else
-      say "  $n not installed"
-    fi
-  done
-  if [ -L "$SKILL_LINK" ]; then
-    say "  claude skill -> $(readlink "$SKILL_LINK")"
-  else
-    say "  claude skill not installed"
+link() { # link <target> <dest>
+  if [ -e "$2" ] && [ ! -L "$2" ]; then
+    err "$2 exists and is not a symlink; remove it first"
+    return 1
   fi
-  exit 0
-  ;;
-uninstall)
-  for n in agentws agentws-mcp; do
-    t="$PREFIX/$n"
-    if [ -L "$t" ]; then
-      rm -- "$t" && say "removed $t"
-    elif [ -e "$t" ]; then
-      warn "$t is not a symlink, leaving it alone"
-    fi
-  done
-  if [ -L "$SKILL_LINK" ]; then
-    rm -- "$SKILL_LINK" && say "removed $SKILL_LINK"
-  fi
-  exit 0
-  ;;
-esac
-
-command -v git >/dev/null 2>&1 || die "git not found on PATH"
-command -v jq  >/dev/null 2>&1 || warn "jq not found. The CLI works without it; agentws-mcp requires it."
-
-mkdir -p "$PREFIX" || die "cannot create $PREFIX"
-[ -w "$PREFIX" ]   || die "$PREFIX is not writable. Pick another prefix: ./install.sh ~/bin"
-
-chmod +x "$SRC/bin/agentws" "$SRC/mcp/agentws-mcp" 2>/dev/null || true
-
-link() { # link <target> <name>
-  local target="$1" name="$2" dest="$PREFIX/$2"
-  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
-    die "$dest exists and is not a symlink. Remove it first."
-  fi
-  ln -sfn "$target" "$dest" || die "failed to link $dest"
-  say "linked $dest -> $target"
+  ln -sfn "$1" "$2"
 }
 
-link "$SRC/bin/agentws"      agentws
-link "$SRC/mcp/agentws-mcp"  agentws-mcp
-
-# Claude Code skill: only when the user has a Claude Code home. Other harnesses
-# read AGENTS.md directly and need nothing linked.
-if [ -d "$(dirname "$SKILLS_DIR")" ]; then
-  mkdir -p "$SKILLS_DIR" 2>/dev/null || true
-  if [ -e "$SKILL_LINK" ] && [ ! -L "$SKILL_LINK" ]; then
-    warn "$SKILL_LINK exists and is not a symlink, leaving it alone"
-  else
-    ln -sfn "$SRC/skills/agentws" "$SKILL_LINK" && say "linked $SKILL_LINK -> $SRC/skills/agentws"
-  fi
+if [ -z "${BASH_VERSION:-}" ]; then
+  printf 'install.sh needs bash: curl -fsSL <url> | bash\n' >&2
+  exit 1
 fi
-
-case ":$PATH:" in
-  *":$PREFIX:"*) ;;
-  *) warn "$PREFIX is not on your PATH. Add: export PATH=\"$PREFIX:\$PATH\"" ;;
-esac
-
-say ""
-say "Next:"
-say "  cd <your repo> && agentws init"
-say "  agentws status"
-say ""
-say "MCP config fragments to merge into your agent tool:"
-say "  $SRC/mcp/claude_code.example.json"
-say "  $SRC/mcp/copilot.example.json"
+main "$@"

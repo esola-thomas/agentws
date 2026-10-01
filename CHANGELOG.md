@@ -6,109 +6,73 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
-### Added
+## [0.0.0] - 2026-09-30
 
-- `AGENTS.md`: the harness-neutral agent contract (claim, bootstrap, branch
-  off `origin/<base>`, recycle; refusals are final). `CLAUDE.md` imports it.
-- `skills/agentws/`: a Claude Code skill with the same ritual plus
-  headless-worker rules; `install.sh` links it into `~/.claude/skills`.
-- MCP `instructions` now carry the lifecycle and the never-do list, so an
-  agent that only sees the tool list still knows to claim before editing.
-- `provider_path:` config key: extra directories searched for `<provider>.sh`
-  before the bundled `providers/`, so a private, project-specific provider can
-  live next to its `.agentws.yml` instead of inside this repo.
-- Safe phantom-dirty detection, `refresh`, and opt-in claim-time auto-refresh.
-- Provider environment check, setup, and bootstrap hint hooks, plus
-  environment-aware status, claim preference, `create --with-env`, and
-  `doctor --fix-env`.
-- `recycle` and `done` for end-of-task branch cleanup and lock release.
-- Per-lock TTL overrides, remaining TTL display, structured task metadata, and
-  opt-in finished-slot auto-release.
-- MCP tools for refresh, prune, create, recycle, and done, with claim metadata
-  and environment options.
-- `provider_slot_reset <slot> <path> <ref>`, the twelfth contract function.
-  Core calls it after `recycle` or `refresh` has moved a slot's working tree,
-  while the lock is still held. The default syncs submodules when the slot has
-  a `.gitmodules` and is a no-op otherwise, so providers that do nothing keep
-  working and the bundled ones gain the fix without a private provider.
-
-### Changed
-
-- `recycle` no longer treats a submodule gitlink that merely points elsewhere as
-  tracked changes it would discard, because the post-reset hook restores it. An
-  uncommitted change *inside* a submodule is still refused, now named as such
-  and before anything is touched, and untracked files inside a submodule join
-  the existing `--clean-untracked` gate.
-- `refresh` heals a slot whose only dirt is a submodule lagging its gitlink.
-  That is shared-ref drift, not work, but it could never be proved phantom.
-
-### Fixed
-
-- `recycle` reported success and released the lock while leaving a slot dirty
-  and non-claimable, whenever the task branch and the default branch recorded
-  different submodule commits: the parent reset moved the gitlink but not the
-  submodule working tree, and the next `recycle` then refused the slot outright.
-  Recycle now resyncs, verifies the slot really is claimable before releasing,
-  and fails with `EPROVIDER` keeping the lock if it is not. ([#9])
-
-[#9]: https://github.com/esola-thomas/agentws/issues/9
-
-## [0.1.0] - 2026-08-10
-
-First public release. Extracted from an internal tool that had been in daily use
-coordinating agents across five workspaces.
+First release. Extracted from an internal tool in daily use coordinating agents
+across several workspaces.
 
 ### Added
 
-- `bin/agentws`, a pure bash CLI with the commands `status`, `free`, `claim`,
-  `lock`, `unlock`, `locks`, `sync`, `prune`, `create`, `destroy`, `doctor`,
-  `config`, and `init`.
-- Advisory file locking with a conservative liveness ladder. Every uncertain
-  case resolves to alive: cross-host locks, locks with no recorded session pid,
-  and platforms without `/proc` are never judged dead. Pid reuse is detected on
-  Linux via process start time. Documented in `docs/LOCKING.md`.
-- Lock acquisition through `set -o noclobber` in a subshell, atomic against
-  concurrent acquirers on a local filesystem.
-- A central lock registry outside the workspaces, so cleaning a workspace cannot
-  destroy a lock.
-- `--json` on every command, emitting exactly one envelope line on stdout with
-  stable error codes and exit codes. Human narrative always goes to stderr.
-- Provider contract with eight hooks and core-supplied defaults. Providers may
-  not touch the lock directory.
-- Providers: `worktree` (default) and `fullclone`.
-- Strict-subset YAML config parser. Unrecognised syntax is a `file:line` error,
-  never a silently dropped key. `agentws config --json` prints exactly what the
-  parser saw.
-- Path canonicalisation with `pwd -P` on `root` and `lock_dir`, so two symlinked
-  paths to one checkout cannot produce two lock files.
-- `mcp/agentws-mcp`, an optional JSON-RPC stdio server in bash and jq exposing
-  six tools: `workspace_status`, `workspace_claim`, `workspace_lock`,
-  `workspace_release`, `workspace_sync`, `workspace_doctor`. It never opens a
-  lock file; every action is one `exec` of `agentws --json`.
-- Drop-in MCP config fragments for Claude Code and GitHub Copilot CLI in
-  `mcp/claude_code.example.json` and `mcp/copilot.example.json`.
-- `install.sh`, two symlinks with `--check` and `--uninstall` modes. No package
-  manager, no build step.
-- bats test suite: the six-case liveness matrix over a faked `/proc`, a 20-way
-  concurrent acquisition race, provider contract conformance, and JSON shape
-  checks including the empty-lock-directory case.
-- Documentation: `README.md`, `docs/ARCHITECTURE.md`, `docs/LOCKING.md`,
-  `docs/PROVIDERS.md`, `CONTRIBUTING.md`.
+- **Install and updates.** `curl -fsSL .../install.sh | bash` clones a managed
+  install into `~/.local/share/agentws`, links the CLI, and wires every detected
+  AI harness. The install updates itself: every command starts a detached,
+  once-a-day check that fast-forwards to the newest `v*` tag (or `origin/main`
+  with `AGENTWS_UPDATE_CHANNEL=main`), never downgrades, and refuses a dirty
+  install. `agentws update` runs it now; `AGENTWS_NO_AUTO_UPDATE=1` turns it
+  off. Running `install.sh` from a checkout links that checkout and never
+  updates it.
+- **Harness wiring.** `agentws setup [harness...]` registers the MCP server and
+  links the skill for Claude Code, Codex CLI, Copilot CLI, Cursor, and Gemini
+  CLI, plus a Claude Code SessionStart hook (`agentws hook session-start`).
+  `--check` and `--remove`. Skills go to `~/.claude/skills` and the cross-tool
+  `~/.agents/skills`.
+- **One-step farms.** `agentws init [repo]` writes `<repo>-ws/.agentws.yml`
+  beside the checkout, creates the slots as worktrees of it (`--slots N`,
+  default 3; `--root DIR`), and makes it the default farm
+  (`~/.config/agentws/default.yml`, switchable with `agentws use`), so an MCP
+  server or hook finds it from any directory.
+- **CLI.** `bin/agentws`, pure bash 3.2: `status`, `free`, `claim`, `lock`,
+  `unlock`, `locks`, `sync`, `prune`, `refresh`, `recycle`/`done`, `create`,
+  `destroy`, `doctor`, `config`, `version`. `--json` on every command emits one
+  envelope line on stdout with stable error and exit codes; narrative goes to
+  stderr.
+- **Locking.** Advisory lock files created with `noclobber`, atomic against
+  concurrent acquirers, in a registry outside the workspaces. A conservative
+  liveness ladder: every uncertain case resolves to alive, and pid reuse is
+  detected on Linux through process start time. See `docs/LOCKING.md`.
+- **Slot lifecycle.** Environment-aware claims (`--require-env`,
+  `create --with-env`, `doctor --fix-env`), provider bootstrap hints, safe
+  phantom-dirty healing (`refresh`, opt-in `auto_refresh`), per-lock TTLs,
+  structured task metadata, and opt-in finished-slot auto-release. `recycle`
+  resyncs submodules, verifies the slot is claimable before releasing, and
+  keeps the lock if it is not.
+- **Providers.** A twelve-function contract with core defaults; `worktree`
+  (default) and `fullclone`; `provider_path` for private, project-specific
+  providers. Providers may not touch the lock directory.
+- **Configuration.** A strict-subset YAML parser: unrecognised syntax is a
+  `file:line` error, never a silently dropped key. `root` and `lock_dir` are
+  canonicalised, so symlinked paths cannot produce two lock files.
+- **MCP server.** `mcp/agentws-mcp`, bash and jq, eleven `workspace_*` tools,
+  each one `exec` of `agentws --json`. No force parameter, per-session lock
+  owners, lifecycle `instructions`, protocol version negotiation (2025-06-18,
+  2025-03-26, 2024-11-05).
+- **Agent docs.** `AGENTS.md`, the harness-neutral contract, and the
+  `skills/agentws` skill with the same ritual plus headless-worker rules.
+- **Tests and CI.** bats suite (liveness matrix over a faked `/proc`, a 20-way
+  acquisition race, slot lifecycle, onboarding and self-update), shellcheck,
+  both run on every pull request.
 
 ### Known limitations
 
 - macOS, Git Bash, and MSYS2 have no `/proc`, so locks expire by TTL only.
-  Process death is never detected there. `ttl_hours: 4` is recommended on those
-  platforms. Reported by `doctor`, by `locks --json` as
-  `"liveness_supported": false`, and by a daily warning from `lock`.
-- Git Bash and MSYS2 are best-effort. `noclobber` atomicity on NTFS is
-  unverified.
-- Windows is not supported natively. Use WSL2, which is fully featured.
-- `mcp/agentws-mcp` requires bash 4.1 or newer and `jq`. The CLI needs neither.
-  macOS users get the full CLI on system bash and need a newer bash only for the
-  MCP server.
-- Claude Code and GitHub Copilot CLI are the only MCP clients that have been run
-  against the server. Codex, Cursor, Aider, and others are untested. The plain
-  CLI with `--json` is the fallback for any tool.
+  `ttl_hours: 4` is recommended there. `doctor` and `locks --json`
+  (`"liveness_supported": false`) report it.
+- Git Bash and MSYS2 are best-effort; `noclobber` atomicity on NTFS is
+  unverified. Windows is supported through WSL2 only.
+- The MCP server needs bash 4.1 or newer and `jq`; the CLI needs neither.
+- `agentws setup` has been run against Claude Code and Codex CLI. The Copilot
+  CLI, Cursor, and Gemini CLI entries follow their documented formats and have
+  not been run here.
 
-[0.1.0]: https://example.invalid/agentws/releases/tag/v0.1.0
+[Unreleased]: https://github.com/esola-thomas/agentws/compare/v0.0.0...HEAD
+[0.0.0]: https://github.com/esola-thomas/agentws/releases/tag/v0.0.0

@@ -41,6 +41,8 @@ setup_sandbox() { # setup_sandbox [slots...]
   export AGENTWS_CONFIG="$CONFIG"
   export AGENTWS_PROC="$PROC"
   export AGENTWS_OWNER="tester"
+  export AGENTWS_NO_AUTO_UPDATE=1
+  export XDG_CONFIG_HOME="$SANDBOX/xdg-config" XDG_STATE_HOME="$SANDBOX/xdg-state"
   unset AGENTWS_PID WSCTL_PID WSCTL_OWNER AGENTWS_TTL WSCTL_TTL
 
   HOSTNAME_SHORT="$(hostname -s 2>/dev/null || echo host)"

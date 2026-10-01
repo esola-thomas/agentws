@@ -84,30 +84,30 @@ trap is still correct, it just waits out its TTL.
 
 ## Wiring
 
-### Claude Code
+`agentws setup` registers this server with every AI tool it finds, by absolute
+path into the install, so `agentws update` upgrades every tool at once:
 
-Copy `claude_code.example.json` into `~/.claude.json`, or into `.mcp.json` at a
-project root for a project-scoped server. Edit the three paths — MCP clients do
-not expand `$HOME`, so write them out in full.
+| Tool | Registered with |
+|---|---|
+| Claude Code | `claude mcp add agentws --scope user --env AGENTWS_OWNER_PREFIX=claude -- <path>` |
+| Codex CLI | `codex mcp add agentws --env AGENTWS_OWNER_PREFIX=codex -- <path>` |
+| Copilot CLI | `mcpServers.agentws` in `~/.copilot/mcp-config.json` (`type: local`) |
+| Cursor | `mcpServers.agentws` in `~/.cursor/mcp.json` (`type: stdio`) |
+| Gemini CLI | `mcpServers.agentws` in `~/.gemini/settings.json` |
 
-```bash
-claude mcp list        # expect: agentws  connected
+No `AGENTWS_CONFIG` is needed: the server finds the farm from its working
+directory, or falls back to the default farm set by `agentws init` or
+`agentws use`. Set `AGENTWS_CONFIG` in the server's env only to pin one farm.
+
+For any other MCP client, the entry is:
+
+```json
+{"mcpServers":{"agentws":{"command":"/home/you/.local/share/agentws/mcp/agentws-mcp","env":{"AGENTWS_OWNER_PREFIX":"mytool"}}}}
 ```
 
 Smoke test: have the agent call `workspace_status`, then run
 `agentws status --json | jq .` in a terminal. They must agree field for field,
 because they are the same exec.
-
-### Copilot CLI
-
-Copy `copilot.example.json` into the Copilot CLI MCP config. Same server, same
-schemas. Confirm exactly eleven tools appear in the client's tool list.
-
-### Other clients
-
-Codex CLI, Cursor, Aider, Windsurf, Continue, and Zed are untested here. Their
-config schema and stdio support are unverified, so no fragment is shipped for
-them.
 
 ## Fallback: no MCP required
 

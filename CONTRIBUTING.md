@@ -87,7 +87,7 @@ bats test/
 bats test/lock_matrix.bats
 
 # lint
-shellcheck -s bash bin/agentws lib/*.sh providers/*.sh mcp/agentws-mcp install.sh
+shellcheck -S warning -s bash bin/agentws lib/*.sh providers/*.sh mcp/agentws-mcp install.sh
 ```
 
 The lock tests never read the real `/proc`. They point `AGENTWS_PROC` at a fake
@@ -118,6 +118,12 @@ BATS_SHELL=/bin/bash bats test/
   parser reject the old spelling loudly rather than silently ignoring it.
 - New providers go in `providers/`, implement `provider_api_version` returning
   `1`, and come with a `test/provider_contract.bats` case.
+
+## Releases
+
+Managed installs follow the newest `v*` tag. To release: bump `VERSION`, move
+the changelog's Unreleased section under the new version, merge, then tag the
+merge commit `vX.Y.Z` and push the tag. Every install picks it up within a day.
 
 ## Reporting bugs
 
