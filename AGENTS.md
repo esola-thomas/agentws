@@ -80,9 +80,9 @@ Both read `agentws status --json`; the JSON envelope (`ok`, `command`, `data`,
 `error`) is the stable interface. Human text goes to stderr, so piping to `jq`
 is always safe.
 
-## Claude Code specifics
+## Harness integration
 
-`skills/agentws/SKILL.md` in this repo is a Claude Code skill with the same
-ritual plus the headless-worker rules; `install.sh` links it into
-`~/.claude/skills/agentws`. The MCP server (`mcp/agentws-mcp`) exposes the
-lifecycle as `workspace_*` tools. Either path runs the same CLI.
+`agentws setup` gives each installed harness the MCP server (`workspace_*`
+tools) and `skills/agentws/SKILL.md`, the same ritual plus headless-worker
+rules: `~/.claude/skills/agentws` for Claude Code, `~/.agents/skills/agentws`
+for Codex, Copilot, Cursor, and Gemini. Every path runs the same CLI.

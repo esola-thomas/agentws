@@ -5,8 +5,9 @@ description: Claim, bootstrap, use, and recycle an isolated agentws slot for any
 
 # agentws slot lifecycle
 
-One slot = one task = one lock. Read `AGENTS.md` next to this skill if anything
-below is unclear; it is the full contract.
+One slot = one task = one lock. If anything below is unclear, `AGENTS.md` at the
+root of the agentws install (`../../AGENTS.md` from this file) is the full
+contract.
 
 ## Am I an orchestrator or a worker?
 
@@ -17,7 +18,7 @@ below is unclear; it is the full contract.
 ## Claim (orchestrator)
 
 ```bash
-export AGENTWS_PID=$$ AGENTWS_OWNER="claude:<task>"
+export AGENTWS_PID=$$ AGENTWS_OWNER="<harness>:<task>"   # e.g. claude:fix-parser
 agentws free                                   # or MCP workspace_status
 eval "$(agentws claim '<task>' --print-env)"   # AGENTWS_SLOT, AGENTWS_WS, WS
 agentws claim '<task>' --json | jq -r .data.bootstrap_hint   # run it in the slot
@@ -28,7 +29,8 @@ when they are loaded; they are the same CLI without `--force`. A refusal
 (busy, stale lock, not claimable) is final: report it, or pick another slot.
 Never loop on a claim, never force, never ask the human to force.
 
-Dispatching a headless worker into the slot:
+Dispatching a headless worker into the slot (Claude Code shown; any headless
+harness works the same way, with cwd set to the slot):
 
 ```bash
 cd "$AGENTWS_WS" && <render brief> | \

@@ -2,6 +2,12 @@
 # agentws - coordinate AI coding agents across isolated git workspaces.
 #
 # Usage:
+#   agentws init [repo]            turn a checkout into a farm (--slots N, --root DIR)
+#   agentws setup [harness...]     wire Claude Code, Codex, Copilot, Cursor, Gemini
+#   agentws update                 update a managed install now (--check to only look)
+#   agentws use [config]           make a farm the default for every directory
+#   agentws version                print the installed version
+#
 #   agentws status                 all slots: branch, dirty, lock, claimable
 #   agentws free                   which slots are idle
 #   agentws claim "reason"         lock the first claimable slot, print its path
@@ -17,7 +23,6 @@
 #   agentws destroy <slot>         remove a slot via the provider
 #   agentws doctor [slot...]       health checks, core plus provider
 #   agentws config                 show the resolved configuration
-#   agentws init [path]            write a starter .agentws.yml
 #
 # Every command supports --json. Output is one envelope line on stdout:
 #   {"ok":bool,"command":str,"data":object|null,"error":null|{"code","message"}}
@@ -46,6 +51,10 @@
 #          --print-env   claim: emit shell assignments for eval
 #          --ignore-pid  disable process-liveness checks, use TTL only
 #          --config PATH use this .agentws.yml
+#
+# Auto-update: an install made by install.sh checks for a new release at most
+# once a day, in the background. AGENTWS_NO_AUTO_UPDATE=1 turns it off;
+# AGENTWS_UPDATE_CHANNEL=main follows main instead of releases.
 
 set -uo pipefail
 
@@ -101,53 +110,15 @@ CLAIM_AGENT=""
 . "$AGENTWS_LIB_DIR/envelope.sh"
 # shellcheck source=../lib/commands.sh
 . "$AGENTWS_LIB_DIR/commands.sh"
+# shellcheck source=../lib/update.sh
+. "$AGENTWS_LIB_DIR/update.sh"
+# shellcheck source=../lib/setup.sh
+. "$AGENTWS_LIB_DIR/setup.sh"
 
 OWNER="${AGENTWS_OWNER:-${WSCTL_OWNER:-${USER}@$(hostname -s 2>/dev/null || echo host):$$}}"
 TTL_OVERRIDE="${AGENTWS_TTL:-${WSCTL_TTL:-}}"
 
-usage() { sed -n '2,48p' "$AGENTWS_SELF" | sed 's/^# \?//'; }
-
-# init runs before config_load: it exists precisely because there is no config.
-cmd_init() { # cmd_init [dir]
-  local dir="${1:-$(pwd -P)}" f top root
-  case "$dir" in /*) ;; *) dir="$(pwd -P)/$dir" ;; esac
-  [ -d "$dir" ] || die "not a directory: $dir"
-  dir="$(cd "$dir" && pwd -P)"
-  f="$dir/.agentws.yml"
-  if [ -e "$f" ] && [ "$FORCE" -ne 1 ]; then
-    die "$f already exists (use --force to overwrite)"
-  fi
-  top="$(basename "$dir")"
-  root="$dir"
-  local defbr
-  defbr="$(git -C "$dir" branch --show-current 2>/dev/null || true)"
-  [ -n "$defbr" ] || defbr=main
-  if [ "$DRY" -eq 1 ]; then
-    printf '  [dry-run] write %s\n' "$f"
-    return 0
-  fi
-  cat > "$f" <<EOF
-# agentws configuration. Edit before first use.
-version: 1
-root: $root
-top: $top
-provider: worktree
-default_branch: $defbr
-slots: [1, 2, 3]
-slot_name_format: "{slot}_{top}"
-reference_slot: ""
-exclude_from_claim: []
-ttl_hours: 12
-auto_refresh: false
-auto_release: false
-auto_release_minutes: 30
-lock_dir: "{root}/.agentws/locks"
-provider_opts:
-  source_repo: $root
-EOF
-  say "wrote $f"
-  printf '{"path":%s,"top":%s,"root":%s}\n' "$(jstr "$f")" "$(jstr "$top")" "$(jstr "$root")"
-}
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$AGENTWS_SELF"; }
 
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -168,18 +139,27 @@ while [ $# -gt 0 ]; do
     --branch)     [ $# -ge 2 ] || die "--branch needs a value"; CLAIM_BRANCH="$2"; shift 2 ;;
     --agent)      [ $# -ge 2 ] || die "--agent needs a value"; CLAIM_AGENT="$2"; shift 2 ;;
     --config)     [ $# -ge 2 ] || die "--config needs a path"; AGENTWS_CONFIG="$2"; shift 2 ;;
+    --root)       [ $# -ge 2 ] || die "--root needs a path"; INIT_ROOT="$2"; shift 2 ;;
+    --slots)      [ $# -ge 2 ] || die "--slots needs a number"; INIT_SLOTS="$2"; shift 2 ;;
+    --version|-V) ARGS+=(version); shift ;;
     -h|--help)    usage; exit 0 ;;
     *)            ARGS+=("$1"); shift ;;
   esac
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 
-# init must run before config_load, which exits 3 when no config exists.
-if [ "${1:-}" = "init" ]; then
-  shift
-  envelope_run init cmd_init "$@"
-  exit $?
-fi
+[ "${1:-}" = update ] || update_maybe_background
+
+# These run before config_load, which exits 3 when no config exists.
+case "${1:-}" in
+  init|use|setup|update|version|hook)
+    CMD="$1"; shift
+    case "$CMD" in
+      hook) cmd_hook "$@" ;;
+      *)    envelope_run "$CMD" "cmd_$CMD" "$@" ;;
+    esac
+    exit $? ;;
+esac
 
 config_load
 

@@ -42,8 +42,9 @@ fi
 command -v jq >/dev/null 2>&1 || { printf 'agentws-mcp: jq not found on PATH\n' >&2; exit 1; }
 
 SERVER_NAME="agentws-mcp"
-SERVER_VERSION="2.0.0"
-PROTOCOL_VERSION="2024-11-05"
+# Newest first. initialize echoes the client's version when it is one of
+# these, and otherwise offers the newest.
+PROTOCOL_VERSIONS="2025-06-18 2025-03-26 2024-11-05"
 
 MCP_SELF="${BASH_SOURCE[0]}"
 while [ -L "$MCP_SELF" ]; do
@@ -68,6 +69,7 @@ fi
   exit 1
 }
 
+SERVER_VERSION="$(cat "$MCP_DIR/../VERSION" 2>/dev/null || echo 0.0.0)"
 OWNER_PREFIX="${AGENTWS_OWNER_PREFIX:-mcp}"
 FRAMED=1
 
@@ -497,8 +499,12 @@ handle() { # handle <message>
 
   case "$method" in
     initialize)
+      local pv want
+      want="$(printf '%s' "$params" | jq -r '.protocolVersion // empty')"
+      pv="${PROTOCOL_VERSIONS%% *}"
+      case " $PROTOCOL_VERSIONS " in *" $want "*) [ -n "$want" ] && pv="$want" ;; esac
       reply_result "$id" "$(jq -cn \
-        --arg pv "$PROTOCOL_VERSION" --arg n "$SERVER_NAME" --arg v "$SERVER_VERSION" \
+        --arg pv "$pv" --arg n "$SERVER_NAME" --arg v "$SERVER_VERSION" \
         '{protocolVersion:$pv,capabilities:{tools:{listChanged:false}},
           serverInfo:{name:$n,version:$v},
           instructions:"agentws hands each agent its own isolated git checkout (a slot). Any task needing a checkout of the farmed repo goes through a slot: workspace_status to see free ones, workspace_claim to take one (the result carries path and bootstrap_hint: run the hint in the slot before any build or test), then inside the slot branch off origin/<base> immediately and never commit on the default branch, and workspace_recycle after the PR merges (or workspace_release to abandon). Never create ad-hoc worktrees or clones of a farmed repo, never edit a slot you do not hold, never git worktree remove, rm -rf, or reset --hard a slot. Pass the same session string on every call. A busy or stale-lock refusal is final: report it or claim another slot; never retry it and never ask a human to force it on your behalf. phantom-dirty on idle slots is shared-ref drift after a merge, healed by workspace_refresh, not uncommitted work."}')"

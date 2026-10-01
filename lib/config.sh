@@ -35,7 +35,13 @@ config_find() { # -> path on stdout, or exit 3
   if [ -n "${AGENTWS_ROOT:-}" ] && [ -f "${AGENTWS_ROOT}/.agentws.yml" ]; then
     printf '%s' "${AGENTWS_ROOT}/.agentws.yml"; return 0
   fi
-  printf 'agentws: no .agentws.yml found; run: agentws init\n' >&2
+  # The default farm, set by init or `agentws use`: lets an MCP server or hook
+  # started in any directory find the farm without AGENTWS_CONFIG.
+  d="${XDG_CONFIG_HOME:-$HOME/.config}/agentws/default.yml"
+  if [ -f "$d" ]; then
+    printf '%s' "$d"; return 0
+  fi
+  printf 'agentws: no .agentws.yml found; run: agentws init inside a git checkout\n' >&2
   exit 3
 }
 
