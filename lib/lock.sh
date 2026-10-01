@@ -19,11 +19,47 @@ lock_read() { # lock_read <slot> <key> -> value on stdout
   sed -n "s/^$2=//p" "$f" | head -1
 }
 
+# Highest lock file format this build understands. A lock with no format= line is 1.
+AGENTWS_LOCK_FORMAT=1
+
+lock_format() { # lock_format <slot> -> recorded format; "1" only when the line is missing
+  if grep -q '^format=' "$(lock_file "$1")" 2>/dev/null; then
+    lock_read "$1" format 2>/dev/null || true
+  else
+    printf '1'
+  fi
+}
+
+# True unless the format is 1..AGENTWS_LOCK_FORMAT. Newer, zero, empty, or
+# unparseable values are held and alive: the other fields may not mean what
+# this build thinks they mean.
+lock_format_unsupported() { # lock_format_unsupported <slot>
+  [ -f "$(lock_file "$1")" ] || return 1
+  local v; v="$(lock_format "$1")"
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  [ "${#v}" -le 9 ] || return 0
+  [ "$((10#$v))" -ge 1 ] && [ "$((10#$v))" -le "$AGENTWS_LOCK_FORMAT" ] && return 1
+  return 0
+}
+
+lock_format_refusal() { # lock_format_refusal <slot> -> message on stdout
+  printf "%s is locked in format '%s', which this agentws does not support (1..%s). The lock is treated as held. Run: agentws update" \
+    "$(slot_name "$1")" "$(lock_sanitize "$(lock_format "$1")")" "$AGENTWS_LOCK_FORMAT"
+}
+
+lock_format_json() { # lock_format_json <slot> -> JSON number, or string if unparseable
+  local v; v="$(lock_format "$1")"
+  case "$v" in
+    ''|*[!0-9]*) jstr "$v" ;;
+    *) if [ "${#v}" -le 9 ]; then printf '%d' "$((10#$v))"; else jstr "$v"; fi ;;
+  esac
+}
+
 lock_age_hours() { # lock_age_hours <slot> -> integer hours, or empty
   local f ts now; f="$(lock_file "$1")"
   [ -f "$f" ] || return 1
   ts="$(lock_read "$1" epoch 2>/dev/null)"
-  [ -n "$ts" ] || return 1
+  [ -n "$ts" ] && [[ "$ts" =~ ^[0-9]+$ ]] || return 1
   now="$(date +%s)"
   printf '%d' $(( (now - ts) / 3600 ))
 }
@@ -133,6 +169,8 @@ lock_owner_alive() { # lock_owner_alive <slot>
 # Why is this lock stale? -> "" (not stale) | "process_dead" | "ttl"
 lock_stale_reason() { # lock_stale_reason <slot>
   [ -f "$(lock_file "$1")" ] || return 0
+  # An unknown format may store epoch or ttl differently, so not even TTL applies.
+  lock_format_unsupported "$1" && return 0
   if ! lock_owner_alive "$1"; then printf 'process_dead'; return 0; fi
   local age; age="$(lock_age_seconds "$1" 2>/dev/null || true)"
   [ -n "$age" ] || return 0
@@ -150,7 +188,10 @@ lock_active() { # lock_active <slot> - true if locked and not stale
   return 0
 }
 
+# A lock in an unsupported format is never "mine": its owner field cannot be
+# trusted to mean the same thing.
 lock_mine() { # lock_mine <slot>
+  lock_format_unsupported "$1" && return 1
   local o; o="$(lock_read "$1" owner 2>/dev/null)" || return 1
   [ "$o" = "$OWNER" ]
 }
@@ -168,7 +209,11 @@ lock_guard() { # lock_guard <slot> <action-description>
   fi
   printf '  %s %s is locked by %s (%sh ago): %s\n' \
     "$(c_red SKIP)" "$(slot_name "$1")" "$o" "$age" "$r"
-  printf '        %s\n' "$(c_dim "$2 skipped. Use --force to override.")"
+  if lock_format_unsupported "$1"; then
+    printf '        %s\n' "$(c_dim "$2 skipped. $(lock_format_refusal "$1")")"
+  else
+    printf '        %s\n' "$(c_dim "$2 skipped. Use --force to override.")"
+  fi
   return 1
 }
 
@@ -196,7 +241,10 @@ cmd_lock() {
   lock_warn_no_liveness
 
   if [ -f "$f" ]; then
-    if lock_is_stale "$slot"; then
+    if lock_format_unsupported "$slot"; then
+      printf '%s %s\n' "$(c_red REFUSE)" "$(lock_format_refusal "$slot")"
+      return 9
+    elif lock_is_stale "$slot"; then
       printf '%s stale lock from %s (%sh old), taking over\n' \
         "$(c_yel NOTE)" "$(lock_read "$slot" owner)" "$(lock_age_hours "$slot")"
       run rm -f "$f"
@@ -232,8 +280,8 @@ cmd_lock() {
   fi
   claim_ttl="$(lock_claim_ttl_hours)"
 
-  if ( set -o noclobber; printf 'owner=%s\nreason=%s\ntask_id=%s\nbranch=%s\nagent=%s\nepoch=%s\nstamp=%s\nhost=%s\npid=%s\nttl=%s\n%s\n' \
-        "$(lock_sanitize "$OWNER")" "$reason" \
+  if ( set -o noclobber; printf 'format=%s\nowner=%s\nreason=%s\ntask_id=%s\nbranch=%s\nagent=%s\nepoch=%s\nstamp=%s\nhost=%s\npid=%s\nttl=%s\n%s\n' \
+        "$AGENTWS_LOCK_FORMAT" "$(lock_sanitize "$OWNER")" "$reason" \
         "$(lock_sanitize "${CLAIM_TASK_ID:-}")" "$(lock_sanitize "${CLAIM_BRANCH:-}")" \
         "$(lock_sanitize "${CLAIM_AGENT:-}")" "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S')" \
         "$(hostname -s 2>/dev/null)" "$$" "$claim_ttl" "$extra" > "$f" ) 2>/dev/null; then
@@ -250,6 +298,11 @@ cmd_unlock() {
   [ $# -ge 1 ] || die "unlock needs a slot"
   local slot="$1"; local f; f="$(lock_file "$slot")"
   [ -f "$f" ] || { printf '%s is not locked\n' "$(slot_name "$slot")"; return 0; }
+  if lock_format_unsupported "$slot" && [ "${FORCE:-0}" -eq 0 ]; then
+    printf '%s %s\n' "$(c_red REFUSE)" "$(lock_format_refusal "$slot")"
+    printf '   Use --force only if you are certain that agent is gone.\n'
+    return 9
+  fi
   if ! lock_mine "$slot" && [ "${FORCE:-0}" -eq 0 ]; then
     printf '%s %s is held by %s, not you (%s).\n' "$(c_red REFUSE)" "$(slot_name "$slot")" \
       "$(lock_read "$slot" owner)" "$OWNER"
@@ -268,7 +321,7 @@ cmd_locks() {
     for s in $AGENTWS_SLOTS; do
       [ -f "$(lock_file "$s")" ] || continue
       sr="$(lock_stale_reason "$s")"
-      objs+=("$(printf '{"slot":%s,"name":%s,"owner":%s,"reason":%s,"task_id":%s,"branch":%s,"agent":%s,"age_hours":%s,"ttl_hours":%s,"remaining_minutes":%s,"remaining_ttl":%s,"epoch":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s}' \
+      objs+=("$(printf '{"slot":%s,"name":%s,"owner":%s,"reason":%s,"task_id":%s,"branch":%s,"agent":%s,"age_hours":%s,"ttl_hours":%s,"remaining_minutes":%s,"remaining_ttl":%s,"epoch":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s,"format":%s,"format_supported":%s}' \
         "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" \
         "$(jstr "$(lock_read "$s" owner  2>/dev/null || true)")" \
         "$(jstr "$(lock_read "$s" reason 2>/dev/null || true)")" \
@@ -284,14 +337,15 @@ cmd_locks() {
         "$(jbool "$(if [ -n "$sr" ]; then echo 1; else echo 0; fi)")" \
         "$(if [ -n "$sr" ]; then jstr "$sr"; else printf 'null'; fi)" \
         "$(jbool "$(lock_mine "$s" && echo 1 || echo 0)")" \
-        "$(jbool "$live")")")
+        "$(jbool "$live")" "$(lock_format_json "$s")" \
+        "$(jbool "$(lock_format_unsupported "$s" && echo 0 || echo 1)")")")
     done
     printf '{"ttl_hours":%s,"owner":%s,"liveness_supported":%s,"locks":[%s]}\n' \
       "$(jnum "$(lock_config_ttl_hours)")" "$(jstr "$OWNER")" "$(jbool "$live")" \
       "$(jjoin "${objs[@]+"${objs[@]}"}")"
     return 0
   fi
-  local found=0 s f age state
+  local found=0 newer=0 s f age state
   printf '%-12s %-28s %-8s %-8s %s\n' "WORKSPACE" "OWNER" "AGE" "REMAIN" "REASON"
   printf '%s\n' "-------------------------------------------------------------------------------"
   for s in $AGENTWS_SLOTS; do
@@ -299,11 +353,13 @@ cmd_locks() {
     [ -f "$f" ] || continue
     found=1
     age="$(lock_age_hours "$s")"
-    if lock_is_stale "$s"; then state="${age}h STALE"; else state="${age}h"; fi
+    if lock_format_unsupported "$s"; then state="${age}h NEWER"; newer=1
+    elif lock_is_stale "$s"; then state="${age}h STALE"; else state="${age}h"; fi
     printf '%-12s %-28s %-8s %-8s %s\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" \
       "$state" "$(lock_remaining_display "$s")" "$(lock_read "$s" reason)"
   done
   [ $found -eq 0 ] && printf '%s\n' "$(c_dim 'no active locks')"
+  [ $newer -eq 1 ] && printf '\n%s\n' "$(c_yel "NEWER: lock format not supported by this agentws, treated as held. Run: agentws update")"
   printf '\n%s\n' "$(c_dim "default ttl $(lock_config_ttl_hours)h; each claim may request a shorter ttl")"
   return 0
 }

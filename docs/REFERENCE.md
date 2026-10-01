@@ -100,6 +100,12 @@ A checkout you cloned and ran `./install.sh` from is a dev install: it is linked
 as is and never updated automatically. The background log is
 `~/.local/state/agentws/update.log`.
 
+Processes from different versions can share one lock directory. A lock written
+in a lock format the reading process does not support is treated as held and
+alive, and every command that would take, release, or rewrite it refuses with
+`ELOCKFORMAT` (exit 9) and the hint `agentws update`. See
+[LOCKING.md](LOCKING.md#lock-format-version).
+
 ## Platform support
 
 | Platform | Status | Lock liveness |

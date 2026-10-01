@@ -25,6 +25,7 @@ alive, and there is no configuration option to change that.
 One file per slot, in a central registry, `KEY=VALUE` lines:
 
 ```
+format=1
 owner=claude:refactor-parser
 reason=refactor the parser
 task_id=GH-123
@@ -43,6 +44,7 @@ cleaning that slot would destroy the lock that says someone is using it.
 
 | Field | Meaning |
 |---|---|
+| `format` | Lock file format version. A missing line means `1`. See [Lock format version](#lock-format-version). |
 | `owner` | Caller-supplied identity string. Advisory. |
 | `reason` | Free text. Shown to anyone who is blocked. |
 | `task_id` | Optional structured task or issue identifier. |
@@ -212,6 +214,52 @@ stands: the pid exists, so alive. Missing data never upgrades a verdict to dead.
 
 The default answer. There is no rung after this one that can flip it.
 
+## Lock format version
+
+`agentws` updates itself, so processes from different versions share one lock
+directory: an MCP server started yesterday next to a CLI updated today. Every
+lock records `format=1` as its first line. Only a lock with no `format=` line
+at all is format 1; it was written before the field existed.
+
+A reader accepts formats `1` through the newest it supports. Anything else, a
+newer number, `0`, an empty `format=`, or a value it cannot parse, is not
+interpreted:
+
+- `lock_stale_reason` returns `""`. Not `process_dead`, not `ttl`, whatever
+  `owner_pid`, `epoch`, or `ttl` say.
+- `lock_mine` is false, even when `owner` matches the caller.
+- `claim` skips the slot. `lock`, `unlock`, `recycle`, `refresh`, and `destroy`
+  refuse with `ELOCKFORMAT` (exit 9) and the hint `agentws update`. `doctor`
+  reports a warning and its auto-release never removes the lock.
+- `locks --json` and the `lock` object in `status --json` carry `format` and
+  `format_supported`. `status`, `locks`, and `doctor` text name the fix.
+
+`agentws unlock <slot> --force` from a human still removes it, under the same
+policy as any other lock.
+
+**Safety argument.** An unknown format is an uncertain case, and every
+uncertain case resolves to alive. A newer format may move or redefine the very
+fields the ladder reads (`host`, `owner_pid`, `owner_start`, `epoch`, `ttl`,
+`owner`), so an older reader that judged it would be guessing, and a wrong
+guess in the dead direction puts two agents in one checkout. Refusing costs at
+most an `agentws update`. The check sits ahead of the ladder and only ever
+returns "not stale", so it cannot turn any verdict that was alive into dead;
+format 1 locks, with or without the field, are judged exactly as before.
+
+**The limit of this protection.** It holds only between versions that read
+`format=`. `wsctl` and every `agentws` release before this field ignore it and
+would judge a format 2 lock by format 1 rules. So a new format may ship only
+if one of these is true:
+
+1. Its format 1 fields (`host`, `owner_pid`, `owner_start`, `epoch`, `ttl`,
+   `owner`) keep their format 1 meaning, so a format-unaware reader still
+   reaches a correct verdict; or
+2. Format-unaware versions are known to be gone from every machine that
+   shares the lock directory.
+
+A format change also bumps `AGENTWS_LOCK_FORMAT` in `lib/lock.sh`, keeps
+`format=` as the first line, and keeps reading every older format.
+
 ## The six-case matrix
 
 `test/lock_matrix.bats` runs these. `/proc` is faked through the `AGENTWS_PROC`
@@ -287,7 +335,7 @@ probably dead, because that decision is exactly the one that destroys work.
 
 ## For maintainers
 
-Four invariants. Breaking any of them breaks the guarantee at the top of this
+Five invariants. Breaking any of them breaks the guarantee at the top of this
 file.
 
 1. **Every uncertain case returns alive.** Exit 1 means definitively dead. If
@@ -297,6 +345,9 @@ file.
 3. **`owner_pid` and `owner_start` are written only from `AGENTWS_PID`,** and
    only when that pid exists at lock time. Do not add another source.
 4. **Acquisition stays `( set -o noclobber; ... > f )`.** Not test-then-write.
+5. **A lock in an unsupported format is never stale and never yours.** It is
+   held until a reader that understands it, or a human with `--force`, says
+   otherwise.
 
 Any change to `lock_owner_alive`, `lock_stale_reason`, or `lock_is_stale` needs
 a stated safety argument in the pull request and a case in

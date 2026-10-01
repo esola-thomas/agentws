@@ -256,3 +256,18 @@ install_reset_provider() { # install_reset_provider <body>
   [ -f "$(lock_path 1)" ]
   printf '%s' "$output" | grep -q 'would not be claimable'
 }
+
+@test "recycle reports ELOCKFORMAT when the lock turns unsupported mid-recycle" {
+  # Fault injection: the lock is replaced by a newer-format lock while recycle
+  # runs. Real providers never touch the lock dir.
+  install_reset_provider 'git -C "$2" submodule update --init --recursive --checkout --quiet
+  sed -i.bak "s/^format=1$/format=2/" "'"$LOCKS"'/1.lock" && rm -f "'"$LOCKS"'/1.lock.bak"'
+  on_branch_with_bumped_submodule
+  agentws lock 1 work >/dev/null
+
+  run agentws recycle --json 1
+  [ "$status" -eq 9 ]
+  local json="${lines[${#lines[@]}-1]}"
+  [ "$(printf '%s' "$json" | jq -r '.error.code')" = "ELOCKFORMAT" ]
+  grep -q '^format=2$' "$(lock_path 1)"
+}

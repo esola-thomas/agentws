@@ -52,7 +52,9 @@ cmd_status() {
     fi
     [ "$behind" != "0" ] && note="${note:+$note, }${behind} behind"
 
-    if lock_active "$s"; then
+    if lock_format_unsupported "$s"; then
+      note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), lock format $(lock_sanitize "$(lock_format "$s")") is not supported; run agentws update")"
+    elif lock_active "$s"; then
       note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), $(lock_remaining_display "$s") left")"
     elif [ -f "$(lock_file "$s")" ]; then
       note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
@@ -254,6 +256,10 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
   REFRESH_STATUS="refused"; REFRESH_DETAIL=""; REFRESH_BASE=""
   d="$(provider_slot_path "$s")"
   provider_slot_exists "$s" || { REFRESH_DETAIL="not created"; return 6; }
+  if lock_format_unsupported "$s"; then
+    REFRESH_DETAIL="$(lock_format_refusal "$s")"
+    return 9
+  fi
   if lock_active "$s"; then
     REFRESH_DETAIL="locked by $(lock_read "$s" owner)"
     return 4
@@ -344,6 +350,10 @@ cmd_recycle() {
   d="$(provider_slot_path "$s")"
   provider_slot_exists "$s" || { printf '%s does not exist\n' "$(slot_name "$s")" >&2; return 6; }
 
+  if lock_format_unsupported "$s"; then
+    printf '%s\n' "$(lock_format_refusal "$s")" >&2
+    return 9
+  fi
   if [ -f "$(lock_file "$s")" ] && ! lock_mine "$s"; then
     printf '%s is held by %s, not you (%s)\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" >&2
     return 4
@@ -436,8 +446,11 @@ EOF
   fi
 
   if [ -f "$(lock_file "$s")" ]; then
-    if [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || return 4
-    else cmd_unlock "$s" || return 4; fi
+    rc=0
+    if [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || rc=$?
+    else cmd_unlock "$s" || rc=$?; fi
+    [ "$rc" -eq 9 ] && return 9
+    [ "$rc" -eq 0 ] || return 4
     released=1
   fi
 
@@ -693,6 +706,10 @@ cmd_destroy() {
   fi
   provider_slot_exists "$slot" || { printf '%s does not exist\n' "$(slot_name "$slot")" >&2; return 6; }
 
+  if lock_format_unsupported "$slot" && [ "${FORCE:-0}" -ne 1 ]; then
+    printf '%s\n' "$(lock_format_refusal "$slot")" >&2
+    return 9
+  fi
   if lock_active "$slot" && ! lock_mine "$slot" && [ "${FORCE:-0}" -ne 1 ]; then
     printf '%s is locked by %s; refusing to destroy it\n' \
       "$(slot_name "$slot")" "$(lock_read "$slot" owner)" >&2
@@ -746,6 +763,10 @@ _auto_release_check() { # _auto_release_check <slot>
   AUTO_RELEASE_STATUS="skipped"; AUTO_RELEASE_DETAIL="not a finished locked slot"
   [ "${AGENTWS_AUTO_RELEASE:-0}" -eq 1 ] || return 0
   marker="$AGENTWS_ROOT/.agentws/activity/$s"
+  if lock_format_unsupported "$s"; then
+    AUTO_RELEASE_DETAIL="$(lock_format_refusal "$s")"
+    return 0
+  fi
   if ! lock_active "$s" || [ "$(slot_branch "$s")" != "$AGENTWS_DEFAULT_BRANCH" ] || \
      [ "$(slot_dirty_count "$s")" != "0" ]; then
     [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
@@ -840,7 +861,9 @@ cmd_doctor() {
     fi
 
     if [ -f "$(lock_file "$s")" ]; then
-      if lock_is_stale "$s"; then
+      if lock_format_unsupported "$s"; then
+        recs="$(jjoin "$recs" "$(_doctor_rec lock warn "held by $(lock_read "$s" owner); $(lock_format_refusal "$s")")")"
+      elif lock_is_stale "$s"; then
         recs="$(jjoin "$recs" "$(_doctor_rec lock warn "stale ($(lock_stale_reason "$s")) held by $(lock_read "$s" owner)")")"
       else
         recs="$(jjoin "$recs" "$(_doctor_rec lock pass "held by $(lock_read "$s" owner)")")"
@@ -947,6 +970,7 @@ cmd_lock_json() {
   cmd_lock "$slot" "$reason" >&2 || rc=$?
   if [ $rc -ne 0 ]; then
     printf 'could not lock %s\n' "$(slot_name "$slot")" >&2
+    [ $rc -eq 9 ] && return 9
     return 4
   fi
   json_slot_obj "$slot"
@@ -959,6 +983,7 @@ cmd_unlock_json() {
   cmd_unlock "$slot" >&2 || rc=$?
   if [ $rc -ne 0 ]; then
     printf 'could not unlock %s\n' "$(slot_name "$slot")" >&2
+    [ $rc -eq 9 ] && return 9
     return 4
   fi
   json_slot_obj "$slot"

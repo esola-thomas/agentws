@@ -21,6 +21,7 @@ envelope_exit_code() { # envelope_exit_code <code>
     ENOTFOUND)   printf '6' ;;
     EPROVIDER)   printf '7' ;;
     EGIT)        printf '8' ;;
+    ELOCKFORMAT) printf '9' ;;
     *)           printf '1' ;;
   esac
 }
@@ -94,6 +95,7 @@ envelope_code_for_rc() { # envelope_code_for_rc <rc>
     6) printf 'ENOTFOUND' ;;
     7) printf 'EPROVIDER' ;;
     8) printf 'EGIT' ;;
+    9) printf 'ELOCKFORMAT' ;;
     *) printf 'EFAIL' ;;
   esac
 }
