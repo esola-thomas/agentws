@@ -235,7 +235,7 @@ json_lock_obj() { # json_lock_obj <slot> -> object or null
   local s="$1" sr
   [ -f "$(lock_file "$s")" ] || { printf 'null'; return 0; }
   sr="$(lock_stale_reason "$s")"
-  printf '{"owner":%s,"reason":%s,"task_id":%s,"branch":%s,"agent":%s,"age_hours":%s,"ttl_hours":%s,"remaining_minutes":%s,"remaining_ttl":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s}' \
+  printf '{"owner":%s,"reason":%s,"task_id":%s,"branch":%s,"agent":%s,"age_hours":%s,"ttl_hours":%s,"remaining_minutes":%s,"remaining_ttl":%s,"host":%s,"stale":%s,"stale_reason":%s,"mine":%s,"liveness_supported":%s,"format":%s,"format_supported":%s}' \
     "$(jstr "$(lock_read "$s" owner  2>/dev/null || true)")" \
     "$(jstr "$(lock_read "$s" reason 2>/dev/null || true)")" \
     "$(jstr "$(lock_read "$s" task_id 2>/dev/null || true)")" \
@@ -249,7 +249,9 @@ json_lock_obj() { # json_lock_obj <slot> -> object or null
     "$(jbool "$(if [ -n "$sr" ]; then echo 1; else echo 0; fi)")" \
     "$(if [ -n "$sr" ]; then jstr "$sr"; else printf 'null'; fi)" \
     "$(jbool "$(lock_mine "$s" && echo 1 || echo 0)")" \
-    "$(jbool "$(lock_liveness_supported && echo 1 || echo 0)")"
+    "$(jbool "$(lock_liveness_supported && echo 1 || echo 0)")" \
+    "$(lock_format_json "$s")" \
+    "$(jbool "$(lock_format_unsupported "$s" && echo 0 || echo 1)")"
 }
 
 # The single per-slot object. wsctl:463.

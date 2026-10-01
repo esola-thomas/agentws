@@ -356,3 +356,20 @@ teardown() { teardown_sandbox; }
   run agentws claim "some task"
   [ "$status" -eq 5 ]
 }
+
+# ------------------------------------------------------- unsupported format
+# A lock in a newer format is an uncertain case. Full coverage: lock_format.bats.
+
+@test "format: a format=2 lock is ALIVE with a dead pid past ttl" {
+  write_lock_default 1 "format=2" "owner_pid=4242" "owner_start=777"
+  set_lock_age_hours 1 48
+  [ "$(lock_verdict 1)" = "alive" ]
+}
+
+@test "format: a format=2 lock is not taken over even by its own owner" {
+  write_lock_default 1 "format=2" "owner=tester" "owner_pid=4242" "owner_start=777"
+  set_lock_age_hours 1 48
+  run agentws lock 1 "again"
+  [ "$status" -eq 9 ]
+  grep -q '^format=2$' "$(lock_path 1)"
+}
