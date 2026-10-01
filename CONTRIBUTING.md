@@ -10,7 +10,9 @@
    `lock_stale_reason`, or `lock_is_stale` need a stated safety argument and a
    test in `test/lock_matrix.bats`. Read [docs/LOCKING.md](docs/LOCKING.md)
    before touching any of it.
-3. **No forge APIs.** Plain git porcelain only.
+3. **No forge APIs.** Plain git porcelain only. The single exception is
+   `submodules` handing PR creation to an installed `gh`; agentws itself
+   never holds a token.
 4. **Providers may not touch the lock directory.** Locking is core-only. A
    provider that reads `$AGENTWS_LOCK_DIR` will be rejected.
 5. **No em-dashes, no buzzwords** in code, comments, docs, or commit messages.
