@@ -104,7 +104,7 @@ command, with this run's owner, is printed.
 | `--push` | Skip the question before pushing, for automation. |
 | `--dry-run` | Report candidates; change, commit, and push nothing. |
 | `--base BRANCH` | Branch from and target `BRANCH` instead of `default_branch`. |
-| `--json` | One envelope: `slot`, `base`, `branch`, `dry_run`, `candidates`, `errors`, `pushed`, `pr_url`, `recycled`. It cannot prompt, so it needs `--dry-run` or `--yes --push`. |
+| `--json` | On success, `data` holds `slot`, `base`, `branch`, `dry_run`, `candidates`, `errors`, `pushed`, `pr_url`, `recycled`; a failure before the push is an error envelope whose message carries the last lines of narrative. It cannot prompt, so it needs `--dry-run` or `--yes --push`. An interrupt reports `EINTR` (exit 130). |
 
 Answers are read from stdin, so `printf 'y\nn\ny\n' | agentws submodules`
 scripts it; end of input means no. Nested submodules are checked out, but only

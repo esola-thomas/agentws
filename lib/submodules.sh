@@ -60,8 +60,10 @@ _sm_tracking_branch() { # _sm_tracking_branch <slot-dir> <name> <sm-dir> <base>
 _sm_finish() {
   [ "$SM_FINISHED" -eq 1 ] && return 0
   SM_FINISHED=1
-  trap - INT TERM HUP
-  [ -n "$SM_SLOT" ] || return 0
+  # Ignored, not default: the recycle child inherits it, so a second Ctrl-C
+  # cannot kill the cleanup halfway and strand the slot.
+  trap '' INT TERM HUP
+  [ -n "$SM_SLOT" ] || { trap - INT TERM HUP; return 0; }
   if [ -d "$SM_DIR" ] && ! git -C "$SM_DIR" diff --cached --quiet 2>/dev/null; then
     git -C "$SM_DIR" reset --quiet >/dev/null 2>&1
     git -C "$SM_DIR" submodule update --quiet --init --recursive >/dev/null 2>&1 || true
@@ -72,6 +74,7 @@ _sm_finish() {
     printf 'could not recycle slot %s; it stays locked. Run: agentws --owner %s recycle %s\n' \
       "$SM_SLOT" "$(sq "$OWNER")" "$SM_SLOT" >&2
   fi
+  trap - INT TERM HUP
 }
 
 _sm_interrupted() {
@@ -247,7 +250,7 @@ cmd_submodules() {
   }
   # The commit must hold exactly the selected gitlinks, whatever a hook did.
   want="$(printf '%s' "$want" | LC_ALL=C sort)"
-  got="$(git -C "$d" diff-tree --no-commit-id --name-only -r HEAD | LC_ALL=C sort)"
+  got="$(git -c core.quotePath=false -C "$d" diff-tree --no-commit-id --name-only -r HEAD | LC_ALL=C sort)"
   if [ "$got" != "$want" ]; then
     _sm_err "." "the commit contains files other than the selected gitlinks; nothing was pushed"
     _sm_result 8; return $?

@@ -232,6 +232,7 @@ git add extra.txt
   [ "$status" -ne 0 ]
   [[ "$output" == *"other than the selected gitlinks"* ]]
   [ -z "$(pushed_branch)" ]
+  slot_free 1
 }
 
 @test "--base branches from and targets another branch; branch = . follows it" {
@@ -285,4 +286,56 @@ git add extra.txt
   run agentws submodules --dry-run --json
   local env; env="$(printf '%s\n' "$output" | tail -1)"
   [ "$(printf '%s' "$env" | jq -r '.data.candidates[0].branch')" = release ]
+}
+
+# A git that pauses on the call matching $SLOW_GIT_MATCH, after dropping a
+# marker, so a test can signal at a known point.
+slow_git() { # slow_git <pattern>
+  local real; real="$(command -v git)"
+  printf '#!/bin/sh\ncase "$*" in *"%s"*) : > "%s/paused"; sleep 4 ;; esac\nexec "%s" "$@"\n' \
+    "$1" "$SANDBOX" "$real" > "$STUBS/git"
+  chmod +x "$STUBS/git"
+}
+
+# Run agentws in its own process group, wait for the pause, signal the group.
+# TERM stands in for Ctrl-C: a background job here starts with SIGINT ignored,
+# and the command traps INT, TERM, and HUP alike.
+signal_at_pause() { # signal_at_pause <SIG> <agentws args...>
+  local sig="$1" pid i; shift
+  command -v setsid >/dev/null 2>&1 || skip "needs setsid (util-linux)"
+  PATH="$STUBS:$PATH" setsid "$AGENTWS_BIN" "$@" >"$SANDBOX/out" 2>"$SANDBOX/err" </dev/null &
+  pid=$!
+  for i in $(seq 1 100); do [ -e "$SANDBOX/paused" ] && break; sleep 0.1; done
+  [ -e "$SANDBOX/paused" ] || return 99
+  kill -"$sig" -- -"$pid" 2>/dev/null
+  wait "$pid"
+}
+
+@test "a non-ASCII submodule path is pushed" {
+  make_remote c
+  git -C "$SANDBOX/wp" submodule add -q "$R/c.git" "módulo"
+  git -C "$SANDBOX/wp" commit -q -m "add módulo"
+  git -C "$SANDBOX/wp" push -q origin main
+  advance c
+  run agentws submodules --yes --push
+  [ "$status" -eq 0 ]
+  [ -n "$(pushed_branch)" ]
+}
+
+@test "a signal during the final recycle does not strand the slot" {
+  advance a
+  slow_git "fetch origin --prune"
+  run signal_at_pause TERM submodules --yes --push
+  [ -n "$(pushed_branch)" ]
+  slot_free 1
+}
+
+@test "an interrupt under --json still prints an envelope and frees the slot" {
+  advance a
+  slow_git "+refs/heads/main:refs/remotes/origin/main"
+  run signal_at_pause TERM submodules --dry-run --json
+  [ "$status" -eq 130 ]
+  [ "$(tail -1 "$SANDBOX/out" | jq -r .error.code)" = EINTR ]
+  slot_free 1
+  [ -z "$(git -C "$SANDBOX/src" for-each-ref 'refs/heads/agentws/*')" ]
 }
