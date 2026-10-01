@@ -107,7 +107,9 @@ cmd_update() {
   trap 'rm -rf "$UPDATE_LOCKD"' EXIT
   trap 'rm -rf "$UPDATE_LOCKD"; exit 130' INT TERM
 
-  GIT_TERMINAL_PROMPT=0 git -C "$h" fetch --quiet --tags --prune origin >&2 || rc=$?
+  # --force: a tag moved on the remote must not fail the fetch for good. What
+  # the install moves to is still gated by the fast-forward check below.
+  GIT_TERMINAL_PROMPT=0 git -C "$h" fetch --quiet --tags --force --prune origin >&2 || rc=$?
   if [ $rc -ne 0 ]; then
     printf 'update: git fetch failed (rc %s)\n' "$rc" >&2
     return 1

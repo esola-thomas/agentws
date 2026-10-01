@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `agentws update` failed for good once a release tag had moved on the remote
+  (`would clobber existing tag`). Tags are now force-fetched; the move is
+  still taken only when it fast-forwards. Re-running the install one-liner
+  heals an install that still has the old update code.
+
 ## [0.0.0] - 2026-10-01
 
 First release. Extracted from an internal tool in daily use coordinating agents

@@ -144,6 +144,10 @@ is `## [X.Y.Z] - YYYY-MM-DD` with a non-empty section, and the tag is exactly
 but it cannot un-push a bad tag: installs may already be updating to it. Step 3
 is the gate that matters.
 
+Never move or delete a published tag. An install whose update code predates
+0.0.1 cannot fetch a moved tag and stays where it is. Fix forward with a new
+version instead.
+
 ## Reporting bugs
 
 Include your platform, `bash --version`, the output of `agentws doctor --json`,
