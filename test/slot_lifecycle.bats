@@ -122,3 +122,16 @@ advance_main() {
   [ "$(printf '%s' "$json" | jq -r '.data.released')" = "false" ]
   [ "$(git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
 }
+
+@test "destroy refuses a format=2 lock; --force --yes gets past it" {
+  write_lock_default 1 "format=2" "owner=other"
+  run agentws destroy --json --yes 1
+  [ "$status" -eq 9 ]
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.error.code')" = "ELOCKFORMAT" ]
+  [ -d "$ROOT/1_proj" ]
+
+  run agentws destroy --force --yes 1
+  [ "$status" -eq 0 ]
+  [ ! -d "$ROOT/1_proj" ]
+  [ ! -f "$(lock_path 1)" ]
+}

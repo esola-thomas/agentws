@@ -53,7 +53,7 @@ cmd_status() {
     [ "$behind" != "0" ] && note="${note:+$note, }${behind} behind"
 
     if lock_format_unsupported "$s"; then
-      note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), lock format $(lock_sanitize "$(lock_format "$s")") is newer than supported; run agentws update")"
+      note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), lock format $(lock_sanitize "$(lock_format "$s")") is not supported; run agentws update")"
     elif lock_active "$s"; then
       note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), $(lock_remaining_display "$s") left")"
     elif [ -f "$(lock_file "$s")" ]; then
@@ -446,8 +446,11 @@ EOF
   fi
 
   if [ -f "$(lock_file "$s")" ]; then
-    if [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || return 4
-    else cmd_unlock "$s" || return 4; fi
+    rc=0
+    if [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || rc=$?
+    else cmd_unlock "$s" || rc=$?; fi
+    [ "$rc" -eq 9 ] && return 9
+    [ "$rc" -eq 0 ] || return 4
     released=1
   fi
 

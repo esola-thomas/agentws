@@ -74,6 +74,41 @@ lock_field() { # lock_field <slot> <jq field>
   [ "$(lock_field 1 format_supported)" = "false" ]
 }
 
+@test "format=0 is unsupported: held, not stale, not mine" {
+  write_lock_default 1 "format=0" "owner=tester" "owner_pid=4242" "owner_start=777"
+  set_lock_age_hours 1 48
+  [ "$(lock_verdict 1)" = "alive" ]
+  [ "$(lock_field 1 mine)" = "false" ]
+  [ "$(lock_field 1 format_supported)" = "false" ]
+  run agentws unlock --json 1
+  [ "$status" -eq 9 ]
+}
+
+@test "a present but empty format= is unsupported, unlike a missing line" {
+  write_lock_default 1 "format=" "owner=tester" "owner_pid=4242" "owner_start=777"
+  set_lock_age_hours 1 48
+  [ "$(lock_verdict 1)" = "alive" ]
+  [ "$(lock_field 1 mine)" = "false" ]
+  [ "$(lock_field 1 format)" = "" ]
+  [ "$(lock_field 1 format_supported)" = "false" ]
+}
+
+@test "destroy on a format=2 lock refuses with ELOCKFORMAT" {
+  write_future_lock 1
+  run agentws destroy --json --yes 1
+  [ "$status" -eq 9 ]
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.error.code')" = "ELOCKFORMAT" ]
+  [ -d "$ROOT/1_proj" ]
+  [ -f "$(lock_path 1)" ]
+}
+
+@test "sync on a format=2 lock prints the update hint, not --force" {
+  write_future_lock 1
+  run agentws sync 1
+  [[ "$output" == *"agentws update"* ]]
+  [[ "$output" != *"Use --force to override"* ]]
+}
+
 @test "status --json carries the format fields on the slot lock object" {
   write_future_lock 1
   run agentws status --json

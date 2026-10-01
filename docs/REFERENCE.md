@@ -101,7 +101,7 @@ as is and never updated automatically. The background log is
 `~/.local/state/agentws/update.log`.
 
 Processes from different versions can share one lock directory. A lock written
-in a newer lock format than the reading process supports is treated as held and
+in a lock format the reading process does not support is treated as held and
 alive, and every command that would take, release, or rewrite it refuses with
 `ELOCKFORMAT` (exit 9) and the hint `agentws update`. See
 [LOCKING.md](LOCKING.md#lock-format-version).

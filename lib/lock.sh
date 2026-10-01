@@ -19,27 +19,31 @@ lock_read() { # lock_read <slot> <key> -> value on stdout
   sed -n "s/^$2=//p" "$f" | head -1
 }
 
-# Highest lock file format this build understands. A lock without format= is 1.
+# Highest lock file format this build understands. A lock with no format= line is 1.
 AGENTWS_LOCK_FORMAT=1
 
-lock_format() { # lock_format <slot> -> recorded format, "1" when absent
-  local v; v="$(lock_read "$1" format 2>/dev/null || true)"
-  printf '%s' "${v:-1}"
+lock_format() { # lock_format <slot> -> recorded format; "1" only when the line is missing
+  if grep -q '^format=' "$(lock_file "$1")" 2>/dev/null; then
+    lock_read "$1" format 2>/dev/null || true
+  else
+    printf '1'
+  fi
 }
 
-# True when the lock was written in a format newer than this build, or one it
-# cannot parse. Such a lock is held and alive: its other fields may not mean
-# what this build thinks they mean.
+# True unless the format is 1..AGENTWS_LOCK_FORMAT. Newer, zero, empty, or
+# unparseable values are held and alive: the other fields may not mean what
+# this build thinks they mean.
 lock_format_unsupported() { # lock_format_unsupported <slot>
   [ -f "$(lock_file "$1")" ] || return 1
   local v; v="$(lock_format "$1")"
   case "$v" in ''|*[!0-9]*) return 0 ;; esac
   [ "${#v}" -le 9 ] || return 0
-  [ "$((10#$v))" -gt "$AGENTWS_LOCK_FORMAT" ]
+  [ "$((10#$v))" -ge 1 ] && [ "$((10#$v))" -le "$AGENTWS_LOCK_FORMAT" ] && return 1
+  return 0
 }
 
 lock_format_refusal() { # lock_format_refusal <slot> -> message on stdout
-  printf '%s is locked in format %s, newer than this agentws supports (%s). The lock is treated as held. Run: agentws update' \
+  printf "%s is locked in format '%s', which this agentws does not support (1..%s). The lock is treated as held. Run: agentws update" \
     "$(slot_name "$1")" "$(lock_sanitize "$(lock_format "$1")")" "$AGENTWS_LOCK_FORMAT"
 }
 
@@ -205,7 +209,11 @@ lock_guard() { # lock_guard <slot> <action-description>
   fi
   printf '  %s %s is locked by %s (%sh ago): %s\n' \
     "$(c_red SKIP)" "$(slot_name "$1")" "$o" "$age" "$r"
-  printf '        %s\n' "$(c_dim "$2 skipped. Use --force to override.")"
+  if lock_format_unsupported "$1"; then
+    printf '        %s\n' "$(c_dim "$2 skipped. $(lock_format_refusal "$1")")"
+  else
+    printf '        %s\n' "$(c_dim "$2 skipped. Use --force to override.")"
+  fi
   return 1
 }
 
@@ -351,7 +359,7 @@ cmd_locks() {
       "$state" "$(lock_remaining_display "$s")" "$(lock_read "$s" reason)"
   done
   [ $found -eq 0 ] && printf '%s\n' "$(c_dim 'no active locks')"
-  [ $newer -eq 1 ] && printf '\n%s\n' "$(c_yel "NEWER: lock format above $AGENTWS_LOCK_FORMAT, treated as held. Run: agentws update")"
+  [ $newer -eq 1 ] && printf '\n%s\n' "$(c_yel "NEWER: lock format not supported by this agentws, treated as held. Run: agentws update")"
   printf '\n%s\n' "$(c_dim "default ttl $(lock_config_ttl_hours)h; each claim may request a shorter ttl")"
   return 0
 }

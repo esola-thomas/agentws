@@ -44,7 +44,7 @@ cleaning that slot would destroy the lock that says someone is using it.
 
 | Field | Meaning |
 |---|---|
-| `format` | Lock file format version. Absent means `1`. See [Lock format version](#lock-format-version). |
+| `format` | Lock file format version. A missing line means `1`. See [Lock format version](#lock-format-version). |
 | `owner` | Caller-supplied identity string. Advisory. |
 | `reason` | Free text. Shown to anyone who is blocked. |
 | `task_id` | Optional structured task or issue identifier. |
@@ -218,11 +218,12 @@ The default answer. There is no rung after this one that can flip it.
 
 `agentws` updates itself, so processes from different versions share one lock
 directory: an MCP server started yesterday next to a CLI updated today. Every
-lock records `format=1` as its first line. A lock with no `format=` line was
-written before the field existed and is format 1.
+lock records `format=1` as its first line. Only a lock with no `format=` line
+at all is format 1; it was written before the field existed.
 
-A reader that finds a format newer than it supports, or a value it cannot
-parse, does not interpret the lock:
+A reader accepts formats `1` through the newest it supports. Anything else, a
+newer number, `0`, an empty `format=`, or a value it cannot parse, is not
+interpreted:
 
 - `lock_stale_reason` returns `""`. Not `process_dead`, not `ttl`, whatever
   `owner_pid`, `epoch`, or `ttl` say.
@@ -245,7 +246,18 @@ most an `agentws update`. The check sits ahead of the ladder and only ever
 returns "not stale", so it cannot turn any verdict that was alive into dead;
 format 1 locks, with or without the field, are judged exactly as before.
 
-A future format change bumps `AGENTWS_LOCK_FORMAT` in `lib/lock.sh`, keeps
+**The limit of this protection.** It holds only between versions that read
+`format=`. `wsctl` and every `agentws` release before this field ignore it and
+would judge a format 2 lock by format 1 rules. So a new format may ship only
+if one of these is true:
+
+1. Its format 1 fields (`host`, `owner_pid`, `owner_start`, `epoch`, `ttl`,
+   `owner`) keep their format 1 meaning, so a format-unaware reader still
+   reaches a correct verdict; or
+2. Format-unaware versions are known to be gone from every machine that
+   shares the lock directory.
+
+A format change also bumps `AGENTWS_LOCK_FORMAT` in `lib/lock.sh`, keeps
 `format=` as the first line, and keeps reading every older format.
 
 ## The six-case matrix
