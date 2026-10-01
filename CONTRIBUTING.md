@@ -121,9 +121,28 @@ BATS_SHELL=/bin/bash bats test/
 
 ## Releases
 
-Managed installs follow the newest `v*` tag. To release: bump `VERSION`, move
-the changelog's Unreleased section under the new version, merge, then tag the
-merge commit `vX.Y.Z` and push the tag. Every install picks it up within a day.
+Managed installs follow the newest `v*` tag, and every install picks a new one
+up within a day. To release `X.Y.Z`:
+
+1. In a PR, bump `VERSION` to `X.Y.Z` and move the changelog's Unreleased
+   entries under a new `## [X.Y.Z] - YYYY-MM-DD` heading. CI runs
+   `scripts/check-release.sh` on every PR and push to main.
+2. Merge the PR.
+3. On the merge commit, run `scripts/check-release.sh vX.Y.Z` locally.
+4. Tag the merge commit `vX.Y.Z` and push that one tag
+   (`git push origin vX.Y.Z`). Never `git push --tags`: GitHub sends no push
+   events when more than three tags are pushed at once, so the workflow would
+   not run. Only repo admins can push `v*` tags; a ruleset enforces it.
+5. The `release` workflow reruns the check on the tag and publishes the GitHub
+   release with that changelog section as its notes (it updates the notes if
+   the release already exists).
+
+The check rules: `VERSION` is one line of semver `X.Y.Z` (optionally
+`-prerelease`), the first versioned changelog heading after `## [Unreleased]`
+is `## [X.Y.Z] - YYYY-MM-DD` with a non-empty section, and the tag is exactly
+`v` + `VERSION`. The workflow fails without publishing when the check fails,
+but it cannot un-push a bad tag: installs may already be updating to it. Step 3
+is the gate that matters.
 
 ## Reporting bugs
 

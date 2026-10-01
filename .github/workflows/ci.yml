@@ -9,7 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y bats shellcheck jq
-      - run: shellcheck -S warning -s bash bin/agentws lib/*.sh providers/*.sh mcp/agentws-mcp install.sh
+      - run: shellcheck -S warning -s bash bin/agentws lib/*.sh providers/*.sh mcp/agentws-mcp install.sh scripts/*.sh
+      - run: scripts/check-release.sh
       - run: bats test/
         env:
           TERM: dumb

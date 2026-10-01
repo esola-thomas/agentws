@@ -1,0 +1,31 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check VERSION, CHANGELOG, and tag agree; extract notes
+        run: scripts/check-release.sh --notes "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          pre=false
+          case "$tag" in *-*) pre=true ;; esac
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$tag" --notes-file "$RUNNER_TEMP/notes.md" \
+              --prerelease="$pre" --draft=false
+          else
+            gh release create "$tag" --verify-tag --title "$tag" \
+              --notes-file "$RUNNER_TEMP/notes.md" --prerelease="$pre"
+          fi
