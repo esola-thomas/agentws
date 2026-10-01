@@ -141,12 +141,13 @@ while [ $# -gt 0 ]; do
     --config)     [ $# -ge 2 ] || die "--config needs a path"; AGENTWS_CONFIG="$2"; shift 2 ;;
     --root)       [ $# -ge 2 ] || die "--root needs a path"; INIT_ROOT="$2"; shift 2 ;;
     --slots)      [ $# -ge 2 ] || die "--slots needs a number"; INIT_SLOTS="$2"; shift 2 ;;
-    --version|-V) ARGS+=(version); shift ;;
+    --version|-V) SHOW_VERSION=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     *)            ARGS+=("$1"); shift ;;
   esac
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
+[ "${SHOW_VERSION:-0}" -eq 1 ] && set -- version
 
 [ "${1:-}" = update ] || update_maybe_background
 

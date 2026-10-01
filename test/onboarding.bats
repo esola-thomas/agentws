@@ -121,7 +121,7 @@ stub() { # stub <name>: a CLI that appends its argv to $SANDBOX/<name>.log
   [ -L "$HOME/.claude/skills/agentws" ]
   [ -f "$HOME/.agents/skills/agentws/SKILL.md" ]
   # Two runs, one hook.
-  [ "$(jq '[.hooks.SessionStart[].hooks[] | select(.command | contains("agentws hook session-start"))] | length' \
+  [ "$(jq '[.hooks.SessionStart[].hooks[] | select(.command | contains("hook session-start"))] | length' \
         "$HOME/.claude/settings.json")" -eq 1 ]
 }
 
@@ -231,8 +231,7 @@ piped_install() {
   local home="$HOME/.local/share/agentws" i
   unset AGENTWS_NO_AUTO_UPDATE
 
-  # Piped through cat: the detached check must not hold the pipe open.
-  run bash -c "timeout 10 '$HOME/bin/agentws' version | cat"
+  run "$HOME/bin/agentws" version
   [ "$status" -eq 0 ]
   [ -f "$XDG_STATE_HOME/agentws/last-check" ]
   for i in $(seq 1 50); do
@@ -247,4 +246,107 @@ piped_install() {
   "$HOME/bin/agentws" version >/dev/null
   sleep 1
   [ "$(git -C "$home" rev-parse HEAD)" = "$(git -C "$ORIGIN" rev-parse v9.1.0)" ]
+}
+
+@test "the background check never holds the caller's pipes, even on extra fds" {
+  make_origin
+  piped_install >/dev/null 2>&1
+  unset AGENTWS_NO_AUTO_UPDATE
+  # A fetch that hangs: if the detached child kept any pipe open, cat would wait.
+  local real; real="$(command -v git)"
+  printf '#!/bin/sh\ncase "$*" in *fetch*) sleep 20 ;; esac\nexec "%s" "$@"\n' "$real" > "$STUBS/git"
+  chmod +x "$STUBS/git"
+  local t0 t1
+  t0="$(date +%s)"
+  run bash -c "'$HOME/bin/agentws' version 7>&1 | cat"
+  t1="$(date +%s)"
+  [ "$status" -eq 0 ]
+  [ $((t1 - t0)) -lt 5 ]
+  pkill -f "$HOME/.local/share/agentws/bin/agentws update" 2>/dev/null || true
+}
+
+@test "stable ignores prerelease tags" {
+  make_origin
+  git -C "$ORIGIN" tag v9.0.0
+  piped_install >/dev/null 2>&1
+  git -C "$ORIGIN" commit -q --allow-empty -m rc
+  git -C "$ORIGIN" tag v9.1.0-rc1
+  run "$HOME/bin/agentws" update
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$HOME/.local/share/agentws" rev-parse HEAD)" = "$(git -C "$ORIGIN" rev-parse v9.0.0)" ]
+}
+
+@test "a live update lock is a refusal; a dead one is cleared" {
+  make_origin
+  piped_install >/dev/null 2>&1
+  local lockd="$XDG_STATE_HOME/agentws/update.lock"
+  mkdir -p "$lockd"
+  sleep 30 & local holder=$!
+  printf '%s\n' "$holder" > "$lockd/pid"
+  run "$HOME/bin/agentws" update
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"another update is running"* ]]
+  kill "$holder"; wait "$holder" 2>/dev/null || true
+  run "$HOME/bin/agentws" update
+  [ "$status" -eq 0 ]
+  [ ! -e "$lockd" ]
+}
+
+@test "setup keeps a symlinked config a symlink, with its mode" {
+  mkdir -p "$HOME/.gemini" "$HOME/dotfiles"
+  printf '{"apiKey":"SECRET"}\n' > "$HOME/dotfiles/gemini.json"
+  chmod 600 "$HOME/dotfiles/gemini.json"
+  ln -s "$HOME/dotfiles/gemini.json" "$HOME/.gemini/settings.json"
+  run agentws setup gemini
+  [ "$status" -eq 0 ]
+  [ -L "$HOME/.gemini/settings.json" ]
+  [ "$(jq -r .apiKey "$HOME/dotfiles/gemini.json")" = SECRET ]
+  [ "$(jq -r '.mcpServers.agentws.command' "$HOME/dotfiles/gemini.json")" != null ]
+  [ -z "$(find "$HOME/dotfiles/gemini.json" -perm -g+r)" ]
+}
+
+@test "removing one harness keeps the shared skill for the others" {
+  mkdir -p "$HOME/.cursor" "$HOME/.gemini"
+  agentws setup cursor gemini >/dev/null 2>&1
+  run agentws setup cursor --remove
+  [ "$status" -eq 0 ]
+  [ -L "$HOME/.agents/skills/agentws" ]
+  run agentws setup gemini --remove
+  [ ! -e "$HOME/.agents/skills/agentws" ]
+}
+
+@test "the Claude hook runs from an install path with spaces" {
+  stub claude
+  local inst="$SANDBOX/my tools/agentws"
+  mkdir -p "$inst"
+  cp -R "$AGENTWS_REPO_ROOT/bin" "$AGENTWS_REPO_ROOT/lib" "$AGENTWS_REPO_ROOT/mcp" \
+        "$AGENTWS_REPO_ROOT/skills" "$AGENTWS_REPO_ROOT/providers" "$AGENTWS_REPO_ROOT/VERSION" "$inst/"
+  "$inst/bin/agentws" setup claude >/dev/null 2>&1
+  local cmd
+  cmd="$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOME/.claude/settings.json")"
+  run sh -c "$cmd"
+  [ "$status" -eq 0 ]
+}
+
+@test "a hook entry without a hooks list survives setup" {
+  stub claude
+  mkdir -p "$HOME/.claude"
+  printf '{"hooks":{"SessionStart":[{"matcher":"startup"}]}}\n' > "$HOME/.claude/settings.json"
+  agentws setup claude >/dev/null 2>&1
+  [ "$(jq '[.hooks.SessionStart[] | select(.matcher == "startup")] | length' "$HOME/.claude/settings.json")" -eq 1 ]
+}
+
+@test "init --force keeps existing slots and creates the missing ones" {
+  make_repo "$SANDBOX/proj"
+  cd "$SANDBOX/proj"
+  agentws init --slots 1 >/dev/null 2>&1
+  run agentws init --slots 2 --force
+  [ "$status" -eq 0 ]
+  [ -e "$SANDBOX/proj-ws/1_proj/.git" ]
+  [ -e "$SANDBOX/proj-ws/2_proj/.git" ]
+}
+
+@test "the MCP server rejects a JSON-RPC batch with an error, not silence" {
+  run bash -c "printf '%s\n' '[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]' | '$AGENTWS_REPO_ROOT/mcp/agentws-mcp' 2>/dev/null"
+  [ "$(printf '%s' "$output" | jq -r .error.code)" = "-32600" ]
 }

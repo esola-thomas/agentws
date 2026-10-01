@@ -7,9 +7,9 @@
 
 AGENTWS_DEFAULT_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/agentws/default.yml"
 SETUP_HARNESSES="claude codex copilot cursor gemini"
-# The hook matches on this suffix; the full command carries the absolute path
-# so it runs even when ~/.local/bin is not on the harness's PATH.
-SETUP_HOOK_MARK="agentws hook session-start"
+# The hook is found again by this marker; the full command carries the quoted
+# absolute path so it runs even when ~/.local/bin is not on the harness's PATH.
+SETUP_HOOK_MARK="hook session-start"
 
 # ---------------------------------------------------------------------- init
 # init [repo] [--root DIR] [--slots N]: one command from a checkout to a farm.
@@ -58,7 +58,10 @@ EOF
     printf 'wrote %s\n' "$f" >&2
     i=1
     while [ "$i" -le "$n" ]; do
-      "$AGENTWS_BIN_DIR/agentws" --config "$f" create "$i" >&2 || return 7
+      # Re-running init --force keeps the slots that already exist.
+      if [ ! -e "$root/${i}_$top" ]; then
+        "$AGENTWS_BIN_DIR/agentws" --config "$f" create "$i" >&2 || return 7
+      fi
       i=$((i + 1))
     done
     if [ ! -e "$AGENTWS_DEFAULT_CONFIG" ]; then
@@ -143,20 +146,41 @@ setup_json_file() { # setup_json_file <harness> -> MCP config file for JSON-merg
   esac
 }
 
-# Rewrite a JSON file through jq, atomically. Missing file starts as {}.
+# Rewrite a JSON file through jq. Missing file starts as {}, created private.
+# The result is written back IN PLACE, through any symlink, so the file keeps
+# its inode, mode, and link: a dotfiles symlink to a 600 file holding secrets
+# stays exactly that. jq runs first, so a jq failure never touches the file.
 json_edit() { # json_edit <file> <jq-args...>
   local f="$1" tmp; shift
   mkdir -p "$(dirname "$f")" || return 1
-  [ -s "$f" ] || printf '{}\n' > "$f"
-  tmp="$f.agentws.$$"
-  if jq "$@" "$f" > "$tmp"; then mv "$tmp" "$f"; else rm -f "$tmp"; return 1; fi
+  [ -s "$f" ] || ( umask 077; printf '{}\n' > "$f" ) || return 1
+  tmp="$(umask 077; mktemp "${TMPDIR:-/tmp}/agentws-json.XXXXXX")" || return 1
+  if jq "$@" "$f" > "$tmp"; then
+    cat "$tmp" > "$f" || { rm -f "$tmp"; return 1; }
+  else
+    rm -f "$tmp"; return 1
+  fi
+  rm -f "$tmp"
 }
 
 setup_link_skill() { # setup_link_skill <harness> <on|off>
   local d l
   d="$(setup_skill_dir "$1")"; l="$d/agentws"
   if [ "$2" = off ]; then
-    [ -L "$l" ] && rm -f "$l"
+    # Only our own link; ~/.agents/skills is shared by four harnesses, so the
+    # link stays while any of them is still wired.
+    case "$(readlink "$l" 2>/dev/null)" in
+      "$AGENTWS_HOME_DIR/skills/agentws") ;;
+      *) return 0 ;;
+    esac
+    if [ "$1" != claude ]; then
+      local o
+      for o in codex copilot cursor gemini; do
+        [ "$o" = "$1" ] && continue
+        case "$(setup_state "$o")" in "yes "*) return 0 ;; esac
+      done
+    fi
+    rm -f "$l"
     return 0
   fi
   if [ -e "$l" ] && [ ! -L "$l" ]; then
@@ -199,10 +223,11 @@ setup_mcp() { # setup_mcp <harness> <on|off>
 setup_claude_hook() { # setup_claude_hook <on|off>
   local f="$HOME/.claude/settings.json"
   [ "$1" = off ] && [ ! -f "$f" ] && return 0
-  json_edit "$f" --arg mark "$SETUP_HOOK_MARK" --arg cmd "$AGENTWS_BIN_DIR/agentws hook session-start" --arg on "$1" '
+  json_edit "$f" --arg mark "$SETUP_HOOK_MARK" --arg cmd "$(sq "$AGENTWS_BIN_DIR/agentws") hook session-start" --arg on "$1" '
+    def ours: (.command // "") | (contains("agentws") and contains($mark));
     .hooks.SessionStart = ([(.hooks.SessionStart // [])[]
-        | .hooks = [(.hooks // [])[] | select((.command // "") | contains($mark) | not)]
-        | select(.hooks | length > 0)]
+        | if has("hooks") then .hooks = [.hooks[] | select(ours | not)] else . end
+        | select((has("hooks") | not) or (.hooks | length > 0))]
       + (if $on == "on" then [{hooks:[{type:"command", command:$cmd}]}] else [] end))
     | if (.hooks.SessionStart | length) == 0 then del(.hooks.SessionStart) else . end
     | if (.hooks | length) == 0 then del(.hooks) else . end'
@@ -224,7 +249,7 @@ setup_state() { # setup_state <harness> -> "mcp skill" words: yes/no
 #   no names   every detected harness
 #   --check    report wiring, change nothing
 #   --remove   undo the wiring
-#   --refresh  re-link skills and hooks only where already set up (run by update)
+#   --refresh  re-link skills only where already set up (run by update)
 cmd_setup() {
   local mode=on names="" a h st objs=() rc=0
   for a in "$@"; do
@@ -254,7 +279,6 @@ cmd_setup() {
       refresh)
         st="$(setup_state "$h")"
         [ "${st#* }" = yes ] && setup_link_skill "$h" on
-        [ "$h" = claude ] && [ "${st%% *}" = yes ] && setup_claude_hook on
         ;;
       *)
         [ "${QUIET:-0}" -eq 1 ] || printf '%s %s\n' "$([ "$mode" = on ] && echo wiring || echo removing)" "$h" >&2

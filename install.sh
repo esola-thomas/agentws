@@ -20,6 +20,8 @@
 # executes nothing.
 main() {
   set -uo pipefail
+  # The installer drives agentws itself; no background update may race it.
+  export AGENTWS_NO_AUTO_UPDATE=1
   local repo="${AGENTWS_REPO:-https://github.com/esola-thomas/agentws.git}"
   local home="${AGENTWS_HOME:-$HOME/.local/share/agentws}"
   local prefix="${AGENTWS_PREFIX:-$HOME/.local/bin}"
@@ -36,7 +38,8 @@ main() {
   done
 
   # Running from a checkout? Then that checkout is the install.
-  if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  # Piped, BASH_SOURCE is the literal "main"; only a real install.sh counts.
+  if [ "$(basename "${BASH_SOURCE[0]:-}")" = install.sh ] && [ -f "${BASH_SOURCE[0]}" ]; then
     src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
     [ -x "$src/bin/agentws" ] || src=""
   fi
@@ -60,6 +63,9 @@ main() {
       if [ -f "$home/.git/agentws-managed" ]; then
         rm -rf "$home" && say "removed $home"
       fi
+      local def="${XDG_CONFIG_HOME:-$HOME/.config}/agentws/default.yml"
+      [ -L "$def" ] && rm -f "$def"
+      rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/agentws"
       return 0 ;;
   esac
 
@@ -70,13 +76,15 @@ main() {
     src="$home"
     if [ -f "$src/.git/agentws-managed" ]; then
       say "updating $src"
+      [ -n "${AGENTWS_UPDATE_CHANNEL:-}" ] && \
+        printf 'channel=%s\n' "$AGENTWS_UPDATE_CHANNEL" > "$src/.git/agentws-managed"
       "$src/bin/agentws" update || return 1
     else
       [ -e "$src" ] && { err "$src exists and is not an agentws install; set AGENTWS_HOME"; return 1; }
       say "cloning agentws into $src"
       mkdir -p "$(dirname "$src")" && git clone --quiet "$repo" "$src" || return 1
       local tag
-      tag="$(git -C "$src" tag -l 'v[0-9]*' --sort=-v:refname | head -1)"
+      tag="$(git -C "$src" tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- - | head -1)"
       if [ -n "$tag" ] && [ "${AGENTWS_UPDATE_CHANNEL:-stable}" = stable ]; then
         git -C "$src" -c advice.detachedHead=false checkout --quiet --detach "$tag" || return 1
       fi

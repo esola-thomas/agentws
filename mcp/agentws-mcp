@@ -167,7 +167,7 @@ read_message() {
         continue ;;
       *)
         case "$line" in
-          '{'*)
+          '{'*|'['*)
             # Bare line-delimited JSON, no headers.
             FRAMED=0; MSG="$line"; return 0 ;;
           *) continue ;;
@@ -543,6 +543,10 @@ while read_message; do
   [ -n "$MSG" ] || continue
   if ! printf '%s' "$MSG" | jq -e . >/dev/null 2>&1; then
     send "$(jq -cn '{jsonrpc:"2.0",id:null,error:{code:-32700,message:"parse error"}}')"
+    continue
+  fi
+  if printf '%s' "$MSG" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    send "$(jq -cn '{jsonrpc:"2.0",id:null,error:{code:-32600,message:"batch requests are not supported; send one request per message"}}')"
     continue
   fi
   handle "$MSG" || break

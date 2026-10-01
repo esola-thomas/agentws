@@ -54,10 +54,28 @@ update_target() { # update_target <channel>
   case "$1" in
     main) git -C "$h" rev-parse --verify --quiet origin/main ;;
     stable)
-      tag="$(git -C "$h" tag -l 'v[0-9]*' --sort=-v:refname | head -1)"
+      # Releases only: a v1.2.0-rc1 tag is not a stable target.
+      tag="$(git -C "$h" tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- - | head -1)"
       [ -n "$tag" ] && git -C "$h" rev-parse --verify --quiet "$tag^{commit}" ;;
     *) return 1 ;;
   esac
+}
+
+# Take the update lock: a directory holding the owner's pid. A lock whose pid
+# is gone is stale; it is renamed away before removal, so of two processes that
+# both judge it stale only one can clear it, and neither can delete a fresh lock.
+update_lock() { # update_lock <dir>
+  local d="$1" pid
+  if ! mkdir "$d" 2>/dev/null; then
+    pid="$(cat "$d/pid" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
+    # No pid yet may be a holder between mkdir and writing it: wait it out once.
+    [ -n "$pid" ] || { sleep 1; pid="$(cat "$d/pid" 2>/dev/null)"; }
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
+    mv "$d" "$d.stale.$$" 2>/dev/null && rm -rf "$d.stale.$$"
+    mkdir "$d" 2>/dev/null || return 1
+  fi
+  printf '%s\n' "$$" > "$d/pid"
 }
 
 # update [--check]. With AUTO=1 (background run) it stays quiet on no-ops.
@@ -77,21 +95,20 @@ cmd_update() {
   fi
   case "$ch" in stable|main) ;; *) printf 'unknown update channel %s (stable or main)\n' "$ch" >&2; return 2 ;; esac
   if [ -n "$(git -C "$h" status --porcelain 2>/dev/null)" ]; then
-    printf '%s has local changes; refusing to update\n' "$h" >&2
+    printf '%s has local changes; refusing to update. A managed install is not for editing: git -C %s checkout -f HEAD restores it\n' "$h" "$h" >&2
     return 1
   fi
 
   mkdir -p "$AGENTWS_STATE_DIR"
   lockd="$AGENTWS_STATE_DIR/update.lock"
-  # A lock left by a killed update is ignored after an hour.
-  if [ -d "$lockd" ] && [ -n "$(find "$lockd" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then
-    rmdir "$lockd" 2>/dev/null || true
-  fi
-  mkdir "$lockd" 2>/dev/null || { printf 'another update is running\n' >&2; return 0; }
+  update_lock "$lockd" || { printf 'another update is running (pid %s)\n' "$(cat "$lockd/pid" 2>/dev/null)" >&2; return 1; }
+  # Global, not local: the EXIT trap runs after this function has returned.
+  UPDATE_LOCKD="$lockd"
+  trap 'rm -rf "$UPDATE_LOCKD"' EXIT
+  trap 'rm -rf "$UPDATE_LOCKD"; exit 130' INT TERM
 
   GIT_TERMINAL_PROMPT=0 git -C "$h" fetch --quiet --tags --prune origin >&2 || rc=$?
   if [ $rc -ne 0 ]; then
-    rmdir "$lockd"
     printf 'update: git fetch failed (rc %s)\n' "$rc" >&2
     return 1
   fi
@@ -101,7 +118,6 @@ cmd_update() {
 
   if [ -z "$target" ] || [ "$target" = "$head" ] \
      || ! git -C "$h" merge-base --is-ancestor "$head" "$target" 2>/dev/null; then
-    rmdir "$lockd"
     [ "${AUTO:-0}" -eq 1 ] || printf 'agentws %s is up to date (channel %s)\n' "$(agentws_version)" "$ch" >&2
     [ "${JSON:-0}" -eq 1 ] && printf '{"updated":false,"version":%s,"channel":%s}' \
       "$(jstr "$(cat "$h/VERSION" 2>/dev/null)")" "$(jstr "$ch")"
@@ -109,7 +125,6 @@ cmd_update() {
   fi
 
   if [ "$check" -eq 1 ]; then
-    rmdir "$lockd"
     printf 'update available: %s -> %s (run: agentws update)\n' \
       "$(git -C "$h" rev-parse --short HEAD)" "$(git -C "$h" describe --tags --always "$target" 2>/dev/null)" >&2
     [ "${JSON:-0}" -eq 1 ] && printf '{"updated":false,"available":true,"channel":%s}' "$(jstr "$ch")"
@@ -118,7 +133,6 @@ cmd_update() {
 
   local from; from="$(agentws_version)"
   git -C "$h" -c advice.detachedHead=false checkout --quiet --detach "$target" >&2 || rc=$?
-  rmdir "$lockd"
   [ $rc -eq 0 ] || { printf 'update: checkout of %s failed\n' "$target" >&2; return 1; }
 
   # Re-apply harness wiring with the new code, only where it is already set up.
@@ -130,8 +144,9 @@ cmd_update() {
 }
 
 # Spawn a detached update when the last check is older than the interval.
-# Every fd is redirected so a caller reading our stdout through a pipe never
-# waits on the background child.
+# Every inherited fd is closed or redirected, so a caller reading any pipe of
+# ours never waits on the background child, and setsid (where present) keeps
+# a harness that kills our process group from interrupting a checkout.
 update_maybe_background() {
   case "${AGENTWS_NO_AUTO_UPDATE:-0}" in 1|true|yes) return 0 ;; esac
   local stamp="$AGENTWS_STATE_DIR/last-check" hours="${AGENTWS_UPDATE_INTERVAL_HOURS:-24}"
@@ -143,7 +158,10 @@ update_maybe_background() {
   update_managed || return 0
   mkdir -p "$AGENTWS_STATE_DIR" 2>/dev/null || return 0
   : > "$stamp"
-  ( AUTO=1 nohup "$AGENTWS_HOME_DIR/bin/agentws" update \
-      >"$AGENTWS_STATE_DIR/update.log" 2>&1 </dev/null & ) >/dev/null 2>&1
+  local detach=""
+  command -v setsid >/dev/null 2>&1 && detach=setsid
+  ( AUTO=1 $detach nohup "$AGENTWS_HOME_DIR/bin/agentws" update \
+      >"$AGENTWS_STATE_DIR/update.log" 2>&1 </dev/null \
+      3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   return 0
 }
