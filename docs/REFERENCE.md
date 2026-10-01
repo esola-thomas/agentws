@@ -5,7 +5,7 @@
 | Command | What it does |
 |---|---|
 | `init [repo] [--slots N] [--root DIR]` | Create a farm for a checkout: `<repo>-ws/.agentws.yml` plus N worktree slots. The first farm becomes the default. |
-| `setup [harness...]` | Wire AI tools to this install. `--check`, `--remove`. Harnesses: `claude codex copilot cursor gemini all`. |
+| `setup [harness...]` | Wire AI tools to this install. `--check`, `--remove`. Harnesses: `claude codex copilot cursor gemini all`. With no names, every tool whose command is on PATH (Cursor: `cursor`, `cursor-agent`, or a `~/.cursor` dir). An existing `AGENTWS_OWNER_PREFIX` on the agentws MCP entry is kept. `--check` shows `mcp:stale` for an entry that needs `agentws setup` again. |
 | `use [config]` | Make a farm the default, so agents find it from any directory. |
 | `update` | Update a managed install now. `--check` only reports. |
 | `version` | Installed version. |
@@ -115,7 +115,12 @@ out its TTL. `doctor` and `locks --json` (`"liveness_supported": false`) say so.
 A lock recorded on another host is always treated as alive.
 
 The CLI runs on bash 3.2. The MCP server needs bash 4.1 or newer and `jq`
-(`brew install bash jq` on macOS).
+(`brew install bash jq` on macOS). `agentws setup` checks `bash` on PATH, then
+`/opt/homebrew/bin/bash`, then `/usr/local/bin/bash`, and registers the server
+as `<absolute path of the first bash 4.1+> <server>`, so tools launched with a
+minimal PATH still get it. When no candidate is new enough, setup skips MCP
+for every tool, still links the skill and the Claude hook, and
+`setup --check` shows `mcp:no`.
 
 ## Non-goals
 

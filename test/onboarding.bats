@@ -16,7 +16,7 @@ setup() {
   git config --file "$GIT_CONFIG_GLOBAL" user.email t@example.invalid
   git config --file "$GIT_CONFIG_GLOBAL" user.name tester
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
-  unset AGENTWS_CONFIG AGENTWS_ROOT AGENTWS_PID AGENTWS_OWNER
+  unset AGENTWS_CONFIG AGENTWS_ROOT AGENTWS_PID AGENTWS_OWNER AGENTWS_SETUP_BASH_CANDIDATES CODEX_HOME
   mkdir -p "$HOME"
   STUBS="$SANDBOX/stubs"
   mkdir -p "$STUBS"
@@ -33,7 +33,7 @@ make_repo() { # make_repo <dir>
 }
 
 stub() { # stub <name>: a CLI that appends its argv to $SANDBOX/<name>.log
-  printf '#!/bin/sh\necho "$*" >> "%s/%s.log"\n' "$SANDBOX" "$1" > "$STUBS/$1"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/%s.log"\n' "$SANDBOX" "$1" > "$STUBS/$1"
   chmod +x "$STUBS/$1"
 }
 
@@ -103,8 +103,8 @@ stub() { # stub <name>: a CLI that appends its argv to $SANDBOX/<name>.log
 # --------------------------------------------------------------------- setup
 
 @test "setup wires every detected harness and is idempotent" {
-  stub claude; stub codex
-  mkdir -p "$HOME/.copilot" "$HOME/.cursor" "$HOME/.gemini"
+  stub claude; stub codex; stub copilot; stub cursor-agent; stub gemini
+  mkdir -p "$HOME/.gemini"
   printf '{"theme":"dark"}\n' > "$HOME/.gemini/settings.json"
 
   run agentws setup
@@ -112,10 +112,15 @@ stub() { # stub <name>: a CLI that appends its argv to $SANDBOX/<name>.log
   run agentws setup
   [ "$status" -eq 0 ]
 
-  grep -q "mcp add agentws --scope user --env AGENTWS_OWNER_PREFIX=claude -- .*/mcp/agentws-mcp" "$SANDBOX/claude.log"
-  grep -q "mcp add agentws --env AGENTWS_OWNER_PREFIX=codex -- .*/mcp/agentws-mcp" "$SANDBOX/codex.log"
+  # The server always runs under an absolute bash, even when PATH bash is fine.
+  local b mcp="$AGENTWS_REPO_ROOT/mcp/agentws-mcp"
+  b="$(command -v bash)"
+  grep -qF -- "mcp add agentws --scope user --env AGENTWS_OWNER_PREFIX=claude -- $b $mcp" "$SANDBOX/claude.log"
+  grep -qF -- "mcp add agentws --env AGENTWS_OWNER_PREFIX=codex -- $b $mcp" "$SANDBOX/codex.log"
   [ "$(jq -r '.mcpServers.agentws.type' "$HOME/.copilot/mcp-config.json")" = local ]
   [ "$(jq -r '.mcpServers.agentws.type' "$HOME/.cursor/mcp.json")" = stdio ]
+  [ "$(jq -r '.mcpServers.agentws.command' "$HOME/.cursor/mcp.json")" = "$b" ]
+  [ "$(jq -r '.mcpServers.agentws.args[0]' "$HOME/.cursor/mcp.json")" = "$mcp" ]
   [ "$(jq -r '.mcpServers.agentws.env.AGENTWS_OWNER_PREFIX' "$HOME/.gemini/settings.json")" = gemini ]
   [ "$(jq -r '.theme' "$HOME/.gemini/settings.json")" = dark ]
   [ -L "$HOME/.claude/skills/agentws" ]
@@ -137,6 +142,215 @@ stub() { # stub <name>: a CLI that appends its argv to $SANDBOX/<name>.log
   [ "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOME/.claude/settings.json")" = "echo mine" ]
   [ "$(jq '.hooks.SessionStart | length' "$HOME/.claude/settings.json")" -eq 1 ]
   grep -q "mcp remove --scope user agentws" "$SANDBOX/claude.log"
+}
+
+@test "setup detects a harness by its command, not its config dir" {
+  stub gemini
+  mkdir -p "$HOME/.codex" "$HOME/.copilot" "$HOME/.claude"
+  PATH="$STUBS:/usr/bin:/bin" run agentws setup
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.mcpServers.agentws.env.AGENTWS_OWNER_PREFIX' "$HOME/.gemini/settings.json")" = gemini ]
+  [ ! -e "$HOME/.copilot/mcp-config.json" ]
+  [ ! -e "$HOME/.cursor/mcp.json" ]
+  [[ "$output" != *codex* ]]
+  [[ "$output" != *claude* ]]
+
+  # Named explicitly, a harness is wired without its command.
+  PATH="$STUBS:/usr/bin:/bin" run agentws setup copilot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.mcpServers.agentws.type' "$HOME/.copilot/mcp-config.json")" = local ]
+}
+
+@test "setup detects Cursor by cursor-agent or by ~/.cursor" {
+  stub cursor-agent
+  PATH="$STUBS:/usr/bin:/bin" run agentws setup
+  [ "$(jq -r '.mcpServers.agentws.type' "$HOME/.cursor/mcp.json")" = stdio ]
+  rm -f "$STUBS/cursor-agent" "$HOME/.cursor/mcp.json"
+  PATH="$STUBS:/usr/bin:/bin" run agentws setup
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.mcpServers.agentws.type' "$HOME/.cursor/mcp.json")" = stdio ]
+}
+
+@test "setup --refresh relinks wired skills whatever is on PATH" {
+  mkdir -p "$HOME/.agents/skills"
+  ln -s "$SANDBOX/old/skills/agentws" "$HOME/.agents/skills/agentws"
+  PATH="$STUBS:/usr/bin:/bin" run agentws setup --refresh
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$HOME/.agents/skills/agentws")" = "$AGENTWS_REPO_ROOT/skills/agentws" ]
+}
+
+fake_bash() { # fake_bash <path> <major> <minor> <version>: reports a bash version
+  mkdir -p "$(dirname "$1")"
+  printf '#!/bin/sh\nprintf "%%s" "%s %s %s"\n' "$2" "$3" "$4" > "$1"
+  chmod +x "$1"
+}
+
+@test "setup skips MCP without bash 4.1 but links the skill and hook" {
+  stub claude
+  fake_bash "$SANDBOX/old/bash" 3 2 "3.2.57(1)-release"
+  export AGENTWS_SETUP_BASH_CANDIDATES="$SANDBOX/missing/bash:$SANDBOX/old/bash"
+  run agentws setup claude gemini
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MCP server needs bash 4.1+ (found 3.2.57(1)-release)"* ]]
+  [[ "$output" == *"brew install bash"* ]]
+  [ ! -e "$SANDBOX/claude.log" ]
+  [ ! -e "$HOME/.gemini/settings.json" ]
+  [ -L "$HOME/.claude/skills/agentws" ]
+  [ -L "$HOME/.agents/skills/agentws" ]
+  [ "$(jq '.hooks.SessionStart | length' "$HOME/.claude/settings.json")" -eq 1 ]
+
+  # A registration left from before is reported as unusable.
+  printf '{"mcpServers":{"agentws":{"command":"x"}}}\n' > "$HOME/.claude.json"
+  run agentws setup claude --check
+  [[ "$output" == *"mcp:no "* ]]
+}
+
+@test "setup runs the server with an absolute bash when PATH bash is too old" {
+  stub claude; stub codex
+  fake_bash "$SANDBOX/old/bash" 3 2 "3.2.57(1)-release"
+  fake_bash "$SANDBOX/my brew/bin/bash" 5 2 "5.2.37(1)-release"
+  export AGENTWS_SETUP_BASH_CANDIDATES="$SANDBOX/old/bash:$SANDBOX/my brew/bin/bash"
+  run agentws setup claude codex gemini
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"needs bash"* ]]
+  local mcp="$AGENTWS_REPO_ROOT/mcp/agentws-mcp"
+  grep -qF -- "--env AGENTWS_OWNER_PREFIX=claude -- $SANDBOX/my brew/bin/bash $mcp" "$SANDBOX/claude.log"
+  grep -qF -- "--env AGENTWS_OWNER_PREFIX=codex -- $SANDBOX/my brew/bin/bash $mcp" "$SANDBOX/codex.log"
+  [ "$(jq -r '.mcpServers.agentws.command' "$HOME/.gemini/settings.json")" = "$SANDBOX/my brew/bin/bash" ]
+  [ "$(jq -r '.mcpServers.agentws.args[0]' "$HOME/.gemini/settings.json")" = "$mcp" ]
+}
+
+@test "setup --check reports an entry that does not run under bash 4.1+ as stale" {
+  local nb="$SANDBOX/nb/bash" mcp="$AGENTWS_REPO_ROOT/mcp/agentws-mcp"
+  fake_bash "$nb" 5 2 "5.2.37(1)-release"
+  export AGENTWS_SETUP_BASH_CANDIDATES="$nb"
+  mkdir -p "$HOME/.codex" "$HOME/.gemini"
+
+  # Shebang-style entries from before: they hit whatever bash is on PATH.
+  jq -n --arg c "$mcp" '{mcpServers:{agentws:{command:$c, args:[]}}}' > "$HOME/.claude.json"
+  printf '[mcp_servers.agentws]\ncommand = "%s"\nargs = []\n' "$mcp" > "$HOME/.codex/config.toml"
+  jq -n --arg c "$mcp" '{mcpServers:{agentws:{command:$c, args:[]}}}' > "$HOME/.gemini/settings.json"
+  run agentws setup claude codex gemini --check
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude   mcp:stale"* ]]
+  [[ "$output" == *"codex    mcp:stale"* ]]
+  [[ "$output" == *"gemini   mcp:stale"* ]]
+  [[ "$output" == *"rerun: agentws setup"* ]]
+  run agentws setup gemini --check --json
+  [ "$(printf '%s' "$output" | jq -r '.data.harnesses[0].mcp_state')" = stale ]
+
+  # The expected shape reads as yes.
+  jq -n --arg c "$nb" --arg a "$mcp" '{mcpServers:{agentws:{command:$c, args:[$a]}}}' > "$HOME/.claude.json"
+  printf '[mcp_servers.agentws]\ncommand = "%s"\nargs = ["%s"]\n' "$nb" "$mcp" > "$HOME/.codex/config.toml"
+  run agentws setup claude codex --check
+  [[ "$output" == *"claude   mcp:yes"* ]]
+  [[ "$output" == *"codex    mcp:yes"* ]]
+
+  # Plain setup rewrites a stale entry.
+  run agentws setup gemini
+  [ "$status" -eq 0 ]
+  run agentws setup gemini --check
+  [[ "$output" == *"gemini   mcp:yes"* ]]
+}
+
+@test "setup keeps an existing owner prefix on the agentws entry" {
+  stub claude; stub codex
+  printf '{"mcpServers":{"agentws":{"command":"x","env":{"AGENTWS_OWNER_PREFIX":"team-a"}}}}\n' \
+    > "$HOME/.claude.json"
+  mkdir -p "$HOME/.codex" "$HOME/.gemini" "$HOME/.cursor"
+  printf '[mcp_servers.other.env]\nAGENTWS_OWNER_PREFIX = "wrong"\n\n[mcp_servers.agentws]\ncommand = "x"\n\n[mcp_servers.agentws.env]\nAGENTWS_OWNER_PREFIX = "team-b"\n' \
+    > "$HOME/.codex/config.toml"
+  printf '{"mcpServers":{"agentws":{"command":"x","env":{"AGENTWS_OWNER_PREFIX":"team-c"}}}}\n' \
+    > "$HOME/.gemini/settings.json"
+  run agentws setup claude codex gemini cursor
+  [ "$status" -eq 0 ]
+  grep -q -- "--env AGENTWS_OWNER_PREFIX=team-a -- " "$SANDBOX/claude.log"
+  grep -q -- "--env AGENTWS_OWNER_PREFIX=team-b -- " "$SANDBOX/codex.log"
+  [ "$(jq -r '.mcpServers.agentws.env.AGENTWS_OWNER_PREFIX' "$HOME/.gemini/settings.json")" = team-c ]
+  [ "$(jq -r '.mcpServers.agentws.env.AGENTWS_OWNER_PREFIX' "$HOME/.cursor/mcp.json")" = cursor ]
+}
+
+codex_prefix() { # codex_prefix <expected>: config.toml from stdin, then setup codex
+  mkdir -p "$HOME/.codex"
+  cat > "$HOME/.codex/config.toml"
+  rm -f "$SANDBOX/codex.log"
+  agentws setup codex >/dev/null 2>&1
+  grep -qF -- "mcp add agentws --env AGENTWS_OWNER_PREFIX=$1 -- " "$SANDBOX/codex.log"
+}
+
+@test "setup reads the codex owner prefix from every TOML form" {
+  stub codex
+  codex_prefix 'te am"x' <<'EOF'
+[mcp_servers.agentws]
+command = "x"
+
+[mcp_servers.agentws.env]
+AGENTWS_OWNER_PREFIX = 'te am"x'
+EOF
+  codex_prefix 'a"b\c' <<'EOF'
+[mcp_servers.agentws.env]
+AGENTWS_OWNER_PREFIX = "a\"b\\c"
+EOF
+  codex_prefix new <<'EOF'
+[mcp_servers.agentws.env]
+# AGENTWS_OWNER_PREFIX = "old"
+AGENTWS_OWNER_PREFIX = "new"
+EOF
+  codex_prefix real <<'EOF'
+[mcp_servers.agentws.env]
+MY_AGENTWS_OWNER_PREFIX = "suffix"
+AGENTWS_OWNER_PREFIX = "real"
+EOF
+  codex_prefix codex <<'EOF'
+[mcp_servers.agentws.env]
+MY_AGENTWS_OWNER_PREFIX = "suffix"
+EOF
+  codex_prefix quoted <<'EOF'
+[mcp_servers."agentws".env]
+"AGENTWS_OWNER_PREFIX" = "quoted"
+EOF
+  codex_prefix commented <<'EOF'
+[mcp_servers.agentws.env] # written by codex
+AGENTWS_OWNER_PREFIX = "commented"
+EOF
+  codex_prefix inline <<'EOF'
+[mcp_servers.agentws]
+command = "x"
+env = { OTHER = "a,AGENTWS_OWNER_PREFIX = 'no'", AGENTWS_OWNER_PREFIX = 'inline' }
+EOF
+  codex_prefix dotted <<'EOF'
+[mcp_servers.agentws]
+env.AGENTWS_OWNER_PREFIX = "dotted"
+EOF
+  codex_prefix codex <<'EOF'
+[mcp_servers.other.env]
+AGENTWS_OWNER_PREFIX = "wrong"
+[mcp_servers.agentws]
+command = "x"
+EOF
+}
+
+@test "setup leaves an entry alone when its owner prefix cannot be read" {
+  stub codex
+  mkdir -p "$HOME/.codex" "$HOME/.gemini"
+  printf '[mcp_servers.agentws.env]\nAGENTWS_OWNER_PREFIX = "a\\u0041"\n' > "$HOME/.codex/config.toml"
+  printf '{"mcpServers":{"agentws":{"command":"x","env":{"AGENTWS_OWNER_PREFIX":7}}}}\n' \
+    > "$HOME/.gemini/settings.json"
+  run agentws setup codex gemini
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"codex: cannot read AGENTWS_OWNER_PREFIX"* ]]
+  [[ "$output" == *"gemini: cannot read AGENTWS_OWNER_PREFIX"* ]]
+  [ ! -e "$SANDBOX/codex.log" ]
+  [ "$(jq -r '.mcpServers.agentws.command' "$HOME/.gemini/settings.json")" = x ]
+  [ "$(jq -r '.mcpServers.agentws.env.AGENTWS_OWNER_PREFIX' "$HOME/.gemini/settings.json")" = 7 ]
+}
+
+@test "install --no-setup warns when no bash can run the MCP server" {
+  fake_bash "$SANDBOX/old/bash" 3 2 "3.2.57(1)-release"
+  export AGENTWS_SETUP_BASH_CANDIDATES="$SANDBOX/old/bash"
+  AGENTWS_PREFIX="$HOME/bin" run bash "$AGENTWS_REPO_ROOT/install.sh" --no-setup
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN MCP server needs bash 4.1+ (found 3.2.57(1)-release)"* ]]
 }
 
 @test "setup rejects an unknown harness" {
