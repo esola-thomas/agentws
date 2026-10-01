@@ -6,7 +6,7 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
-## [0.0.0] - 2026-09-30
+## [0.0.0] - 2026-10-01
 
 First release. Extracted from an internal tool in daily use coordinating agents
 across several workspaces.
@@ -25,7 +25,12 @@ across several workspaces.
   links the skill for Claude Code, Codex CLI, Copilot CLI, Cursor, and Gemini
   CLI, plus a Claude Code SessionStart hook (`agentws hook session-start`).
   `--check` and `--remove`. Skills go to `~/.claude/skills` and the cross-tool
-  `~/.agents/skills`.
+  `~/.agents/skills`. Harnesses are detected by their command on PATH. The MCP
+  server is registered as `<absolute bash 4.1+> <server>`, so a harness started
+  with a minimal PATH (a macOS GUI app) cannot fall back to bash 3.2; with no
+  such bash, MCP registration is skipped with instructions, and `--check` marks
+  an entry that cannot start as `mcp:stale`. An existing `AGENTWS_OWNER_PREFIX`
+  is kept, so locks taken over MCP are never orphaned.
 - **One-step farms.** `agentws init [repo]` writes `<repo>-ws/.agentws.yml`
   beside the checkout, creates the slots as worktrees of it (`--slots N`,
   default 3; `--root DIR`), and makes it the default farm
@@ -39,7 +44,10 @@ across several workspaces.
 - **Locking.** Advisory lock files created with `noclobber`, atomic against
   concurrent acquirers, in a registry outside the workspaces. A conservative
   liveness ladder: every uncertain case resolves to alive, and pid reuse is
-  detected on Linux through process start time. See `docs/LOCKING.md`.
+  detected on Linux through process start time. Locks record `format=1`; a lock
+  in a newer or unreadable format is treated as held and alive and refused with
+  `ELOCKFORMAT` (exit 9), so an older install never releases a newer one's
+  lock. See `docs/LOCKING.md`.
 - **Slot lifecycle.** Environment-aware claims (`--require-env`,
   `create --with-env`, `doctor --fix-env`), provider bootstrap hints, safe
   phantom-dirty healing (`refresh`, opt-in `auto_refresh`), per-lock TTLs,
@@ -59,8 +67,10 @@ across several workspaces.
 - **Agent docs.** `AGENTS.md`, the harness-neutral contract, and the
   `skills/agentws` skill with the same ritual plus headless-worker rules.
 - **Tests and CI.** bats suite (liveness matrix over a faked `/proc`, a 20-way
-  acquisition race, slot lifecycle, onboarding and self-update), shellcheck,
-  both run on every pull request.
+  acquisition race, slot lifecycle, lock format, onboarding and self-update),
+  shellcheck, and `scripts/check-release.sh` (VERSION, CHANGELOG, and tag
+  agree) run on every pull request. Pushing a `v*` tag runs the check and
+  publishes the GitHub release from this file.
 
 ### Known limitations
 
@@ -70,6 +80,7 @@ across several workspaces.
 - Git Bash and MSYS2 are best-effort; `noclobber` atomicity on NTFS is
   unverified. Windows is supported through WSL2 only.
 - The MCP server needs bash 4.1 or newer and `jq`; the CLI needs neither.
+  bash 3.2 compatibility of the CLI is checked by review, not yet by CI.
 - `agentws setup` has been run against Claude Code and Codex CLI. The Copilot
   CLI, Cursor, and Gemini CLI entries follow their documented formats and have
   not been run here.
