@@ -129,8 +129,10 @@ up within a day. To release `X.Y.Z`:
    `scripts/check-release.sh` on every PR and push to main.
 2. Merge the PR.
 3. On the merge commit, run `scripts/check-release.sh vX.Y.Z` locally.
-4. Tag the merge commit `vX.Y.Z` and push the tag. Only repo admins can push
-   `v*` tags; a ruleset enforces it.
+4. Tag the merge commit `vX.Y.Z` and push that one tag
+   (`git push origin vX.Y.Z`). Never `git push --tags`: GitHub sends no push
+   events when more than three tags are pushed at once, so the workflow would
+   not run. Only repo admins can push `v*` tags; a ruleset enforces it.
 5. The `release` workflow reruns the check on the tag and publishes the GitHub
    release with that changelog section as its notes (it updates the notes if
    the release already exists).

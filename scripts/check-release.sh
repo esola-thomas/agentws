@@ -27,11 +27,34 @@ ROOT="${AGENTWS_RELEASE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P
 
 SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
+CR="$(printf '\r')"
+for f in VERSION CHANGELOG.md; do
+  if grep -q "$CR" "$ROOT/$f"; then die "$f contains carriage returns (CRLF line endings); convert it to LF"; fi
+done
+
 [ "$(wc -l < "$ROOT/VERSION" | tr -d ' ')" = "1" ] || die "VERSION must be exactly one newline-terminated line"
 VERSION="$(cat "$ROOT/VERSION")"
 printf '%s\n' "$VERSION" | grep -Eq "$SEMVER" || die "VERSION '$VERSION' is not semver X.Y.Z[-prerelease]"
 
-FIRST="$(grep -E '^## \[' "$ROOT/CHANGELOG.md" | grep -v '^## \[Unreleased\]' | head -1)"
+# Prints the newest versioned heading, then its body. Headings inside ``` fences
+# do not count; trailing blank and link-reference lines are dropped.
+SECTION="$(awk '
+  /^```/ { if (on) buf[n++] = $0; fence = !fence; next }
+  !fence && /^## \[/ {
+    if (on) exit
+    if ($0 ~ /^## \[Unreleased\]/) next
+    print; on = 1; next
+  }
+  on { buf[n++] = $0 }
+  END {
+    while (n > 0 && (buf[n-1] ~ /^[[:space:]]*$/ || buf[n-1] ~ /^\[[^]]+\]: /)) n--
+    for (s = 0; s < n && buf[s] ~ /^[[:space:]]*$/; s++) ;
+    for (i = s; i < n; i++) print buf[i]
+  }
+' "$ROOT/CHANGELOG.md")"
+FIRST="$(printf '%s\n' "$SECTION" | head -1)"
+BODY="$(printf '%s\n' "$SECTION" | sed 1d)"
+
 [ -n "$FIRST" ] || die "CHANGELOG.md has no versioned section; add '## [$VERSION] - YYYY-MM-DD'"
 case "$FIRST" in
   "## [$VERSION] - "*) ;;
@@ -39,14 +62,6 @@ case "$FIRST" in
 esac
 printf '%s\n' "$FIRST" | grep -Eq '^## \[[^]]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$' \
   || die "CHANGELOG.md heading '$FIRST' must end in a YYYY-MM-DD date"
-
-BODY="$(awk -v h="$FIRST" '
-  $0 == h { on = 1; next }
-  on && /^## \[/ { exit }
-  on && /^\[[^]]+\]: / { exit }
-  on && !seen && /^[[:space:]]*$/ { next }
-  on { seen = 1; print }
-' "$ROOT/CHANGELOG.md")"
 [ -n "$(printf '%s' "$BODY" | tr -d '[:space:]')" ] || die "CHANGELOG.md section for $VERSION is empty"
 
 if [ -n "$TAG" ]; then

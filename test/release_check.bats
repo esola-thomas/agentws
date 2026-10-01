@@ -74,6 +74,89 @@ teardown() { rm -rf "$FIXTURE"; }
   [ "$status" -ne 0 ]
 }
 
+@test "CHANGELOG heading with a malformed date fails" {
+  printf '# Changelog\n\n## [1.2.3] - 2026-1-01\n\n- x\n' > "$AGENTWS_RELEASE_ROOT/CHANGELOG.md"
+  run "$CHECK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"must end in a YYYY-MM-DD date"* ]]
+}
+
+@test "carriage returns are reported as CRLF line endings" {
+  printf '1.2.3\r\n' > "$AGENTWS_RELEASE_ROOT/VERSION"
+  run "$CHECK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"VERSION contains carriage returns"* ]]
+
+  printf '1.2.3\n' > "$AGENTWS_RELEASE_ROOT/VERSION"
+  printf '## [1.2.3] - 2026-10-01\r\n\r\n- x\r\n' > "$AGENTWS_RELEASE_ROOT/CHANGELOG.md"
+  run "$CHECK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"CHANGELOG.md contains carriage returns"* ]]
+}
+
+@test "a fenced heading inside Unreleased is not the newest section" {
+  cat > "$AGENTWS_RELEASE_ROOT/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+```
+## [9.9.9] - 2026-01-01
+```
+
+## [1.2.3] - 2026-10-01
+
+- Real.
+EOF
+  run "$CHECK" --notes v1.2.3
+  [ "$status" -eq 0 ]
+  [ "$output" = "- Real." ]
+}
+
+@test "--notes keeps fenced headings and mid-section link definitions" {
+  cat > "$AGENTWS_RELEASE_ROOT/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [1.2.3] - 2026-10-01
+
+- First, see [docs].
+
+[docs]: https://x
+
+- After the link.
+
+```
+## [example]
+[y]: https://y
+```
+
+- After the fence.
+
+## [1.2.2] - 2026-09-01
+
+- Older.
+
+[1.2.3]: https://example.invalid/v1.2.3
+EOF
+  run "$CHECK" --notes v1.2.3
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "- First, see [docs]." ]
+  [[ "$output" == *"[docs]: https://x"* ]]
+  [[ "$output" == *"- After the link."* ]]
+  [[ "$output" == *"## [example]"* ]]
+  [[ "$output" == *"[y]: https://y"* ]]
+  [ "${lines[${#lines[@]}-1]}" = "- After the fence." ]
+  [[ "$output" != *"Older"* ]]
+}
+
+@test "trailing link definitions at end of file are not part of the notes" {
+  printf '# Changelog\n\n## [1.2.3] - 2026-10-01\n\n- x\n\n[1.2.3]: https://z\n' \
+    > "$AGENTWS_RELEASE_ROOT/CHANGELOG.md"
+  run "$CHECK" --notes v1.2.3
+  [ "$status" -eq 0 ]
+  [ "$output" = "- x" ]
+}
+
 @test "bad semver in VERSION fails" {
   for v in 1.2 v1.2.3 01.2.3 '1.2.3 ' 1.2.3+build; do
     printf '%s\n' "$v" > "$AGENTWS_RELEASE_ROOT/VERSION"
@@ -87,6 +170,7 @@ teardown() { rm -rf "$FIXTURE"; }
   printf '1.2.3\n1.2.4\n' > "$AGENTWS_RELEASE_ROOT/VERSION"
   run "$CHECK"
   [ "$status" -ne 0 ]
+  [[ "$output" == *"exactly one newline-terminated line"* ]]
 }
 
 @test "tag that does not match VERSION fails" {
