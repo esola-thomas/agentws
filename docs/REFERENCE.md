@@ -19,6 +19,7 @@
 | `sync [slot...]` / `prune [slot...]` | Fetch; delete merged local branches. |
 | `create <slot>` / `destroy <slot>` | Make or remove a slot through the provider. |
 | `doctor [slot...]` | Health checks. `--fix-env` provisions environments. |
+| `submodules` | Update submodule pointers in a claimed slot, push, and open a PR. See below. |
 | `config` | The configuration exactly as the parser read it. |
 
 Every command takes `--json` and prints exactly one envelope line on stdout;
@@ -82,6 +83,38 @@ A project-specific provider can live beside its config: set
 `provider_path: "{root}/.agentws/providers"`. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for the hooks.
 
+## Submodule pointer updates
+
+`agentws submodules` claims a slot, branches `agentws/submodules-<time>` off
+`origin/<base>`, and checks each direct submodule's tracking branch: the
+`.gitmodules` `branch` (`.` means the base branch), else the submodule
+remote's default branch. A candidate is a newer commit that fast-forwards the
+recorded pointer; anything else (fetch error, unknown branch, diverged
+history) is reported and left alone. For each candidate it shows the commits
+and asks; then it shows the exact staged gitlink diff and asks once more before
+committing only those gitlinks, pushing with `git push`, and opening the PR
+with `gh` if it is installed. The slot is recycled at the end, also after
+Ctrl-C. If recycling fails (for example, a submodule remote is unreachable, so
+the slot cannot be resynced), the slot stays locked and the exact recovery
+command, with this run's owner, is printed.
+
+| Option | Effect |
+|---|---|
+| `--yes` | Take every candidate without asking per submodule. Still asks before pushing. |
+| `--push` | Skip the question before pushing, for automation. |
+| `--dry-run` | Report candidates; change, commit, and push nothing. |
+| `--base BRANCH` | Branch from and target `BRANCH` instead of `default_branch`. |
+| `--json` | On success, `data` holds `slot`, `base`, `branch`, `dry_run`, `candidates`, `errors`, `pushed`, `pr_url`, `recycled`; a failure before the push is an error envelope whose message carries the last lines of narrative. It cannot prompt, so it needs `--dry-run` or `--yes --push`. An interrupt reports `EINTR` (exit 130). |
+
+Answers are read from stdin, so `printf 'y\nn\ny\n' | agentws submodules`
+scripts it; end of input means no. Nested submodules are checked out, but only
+the managed repository's own gitlinks change: a nested pointer belongs to its
+parent submodule's repository. The commit is checked before pushing: if it
+holds anything besides the selected gitlinks (a hook added files), nothing is
+pushed. Once a branch is pushed the run reports success even if recycling then
+fails, so `pushed` and `pr_url` are never lost. `AGENTWS_GH` names a different
+`gh` binary.
+
 ## Updates
 
 `install.sh` run through `curl | bash` clones into `~/.local/share/agentws` and
@@ -132,7 +165,9 @@ for every tool, still links the skill and the Claude hook, and
 
 Settled decisions, not a backlog:
 
-- No forge API integration: no PRs, issues, tokens, or credentials.
+- No forge API integration: agentws calls no forge API and holds no tokens or
+  credentials. The one hand-off is `submodules`, which runs `gh pr create`
+  when `gh` is installed; without it, the pushed branch is all it produces.
 - No CI/CD, build, or test orchestration.
 - No GUI, TUI, dashboard, daemon, or network port.
 - No authentication. Locks are advisory and assume one trusted user per machine.

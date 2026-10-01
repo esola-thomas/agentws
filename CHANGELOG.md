@@ -6,12 +6,23 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- `agentws submodules`: in a claimed slot, find submodules whose tracking
+  branch has moved ahead of the recorded pointer, ask per submodule (`--yes`
+  for all), show the staged gitlink diff, ask before pushing (`--push` skips
+  that), then commit only those gitlinks, `git push`, open the PR with `gh`
+  when installed, and recycle the slot. `--dry-run`, `--base`, `--json`.
+  ([#12])
+
 ### Fixed
 
 - `agentws update` failed for good once a release tag had moved on the remote
   (`would clobber existing tag`). Tags are now force-fetched; the move is
   still taken only when it fast-forwards. Re-running the install one-liner
   heals an install that still has the old update code.
+
+[#12]: https://github.com/esola-thomas/agentws/issues/12
 
 ## [0.0.0] - 2026-10-01
 

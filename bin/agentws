@@ -22,6 +22,9 @@
 #   agentws create <slot>          create a slot; --with-env provisions its environment
 #   agentws destroy <slot>         remove a slot via the provider
 #   agentws doctor [slot...]       health checks, core plus provider
+#   agentws submodules             update submodule pointers in a slot, push, open a PR
+#                                  (--yes all candidates, --push no final prompt,
+#                                   --dry-run preview, --base B)
 #   agentws config                 show the resolved configuration
 #
 # Every command supports --json. Output is one envelope line on stdout:
@@ -114,6 +117,8 @@ CLAIM_AGENT=""
 . "$AGENTWS_LIB_DIR/update.sh"
 # shellcheck source=../lib/setup.sh
 . "$AGENTWS_LIB_DIR/setup.sh"
+# shellcheck source=../lib/submodules.sh
+. "$AGENTWS_LIB_DIR/submodules.sh"
 
 OWNER="${AGENTWS_OWNER:-${WSCTL_OWNER:-${USER}@$(hostname -s 2>/dev/null || echo host):$$}}"
 TTL_OVERRIDE="${AGENTWS_TTL:-${WSCTL_TTL:-}}"
@@ -184,6 +189,7 @@ case "$CMD" in
   create)   envelope_run create  cmd_create  "$@" ;;
   destroy)  envelope_run destroy cmd_destroy "$@" ;;
   doctor)   envelope_run doctor  cmd_doctor  "$@" ;;
+  submodules) envelope_run submodules cmd_submodules "$@" ;;
   locks)    envelope_run locks   cmd_locks   "$@" ;;
   config)   envelope_run config  cmd_config  "$@" ;;
   lock)

@@ -21,6 +21,7 @@ envelope_exit_code() { # envelope_exit_code <code>
     ENOTFOUND)   printf '6' ;;
     EPROVIDER)   printf '7' ;;
     EGIT)        printf '8' ;;
+    EINTR)       printf '130' ;;
     ELOCKFORMAT) printf '9' ;;
     *)           printf '1' ;;
   esac
@@ -62,7 +63,12 @@ envelope_run() { # envelope_run <command-name> <function> [args...]
 
   local errf out rc msg code
   errf="$(mktemp "${TMPDIR:-/tmp}/agentws.XXXXXX")" || die "cannot create temp file"
+  # A signal must not kill this shell before the envelope is printed. With a
+  # handler set, bash runs it only after the command substitution returns, so
+  # the command's own cleanup finishes first and its exit code is reported.
+  trap ':' INT TERM HUP
   out="$("$fn" "$@" 2>"$errf")"; rc=$?
+  trap - INT TERM HUP
   cat "$errf" >&2
 
   if [ $rc -eq 0 ]; then
@@ -96,6 +102,7 @@ envelope_code_for_rc() { # envelope_code_for_rc <rc>
     7) printf 'EPROVIDER' ;;
     8) printf 'EGIT' ;;
     9) printf 'ELOCKFORMAT' ;;
+    130|143|129) printf 'EINTR' ;;
     *) printf 'EFAIL' ;;
   esac
 }
