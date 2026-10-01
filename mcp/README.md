@@ -9,8 +9,9 @@ the server is wrong.
 ## Requirements
 
 - bash 4.1 or newer (the framing reader uses `read -r -N`). The agentws CLI
-  itself still runs on bash 3.2; only this server needs 4.1. On a 3.2-only host,
-  skip MCP and call `agentws --json` from a shell tool instead.
+  itself still runs on bash 3.2; only this server needs 4.1. `agentws setup`
+  looks for one (see Wiring). On a 3.2-only host it skips MCP; call
+  `agentws --json` from a shell tool instead.
 - `jq` on PATH.
 - `agentws` on PATH, or `AGENTWS_BIN` set to its absolute path.
 
@@ -94,6 +95,18 @@ path into the install, so `agentws update` upgrades every tool at once:
 | Copilot CLI | `mcpServers.agentws` in `~/.copilot/mcp-config.json` (`type: local`) |
 | Cursor | `mcpServers.agentws` in `~/.cursor/mcp.json` (`type: stdio`) |
 | Gemini CLI | `mcpServers.agentws` in `~/.gemini/settings.json` |
+
+The prefix shown is the default. Re-running setup keeps the
+`AGENTWS_OWNER_PREFIX` already on an agentws entry, because changing it
+orphans the locks held under the old prefix.
+
+The server needs bash 4.1+. Setup probes `bash` on PATH, then
+`/opt/homebrew/bin/bash`, then `/usr/local/bin/bash`. If the PATH bash
+qualifies, `<path>` is the server itself, as above. If only an absolute
+candidate does, the command is that bash and the server path is its argument
+(`-- /opt/homebrew/bin/bash <path>`, or `command` plus `args` in the JSON
+files), so the server does not depend on the tool's PATH. If none does, setup
+registers no server and says so.
 
 No `AGENTWS_CONFIG` is needed: the server finds the farm from its working
 directory, or falls back to the default farm set by `agentws init` or

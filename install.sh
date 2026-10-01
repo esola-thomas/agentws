@@ -105,6 +105,11 @@ main() {
   if [ "$setup" -eq 1 ] && command -v jq >/dev/null 2>&1; then
     say ""
     "$src/bin/agentws" setup || warn "harness setup reported a problem; rerun: agentws setup"
+  else
+    # setup prints this itself when it runs.
+    local msg
+    msg="$(. "$src/lib/setup.sh" && { v="$(setup_mcp_bash)" || setup_bash_msg "$v"; })"
+    [ -z "$msg" ] || warn "$msg"
   fi
 
   say ""

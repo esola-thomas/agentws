@@ -120,15 +120,45 @@ cmd_hook() {
 }
 
 # --------------------------------------------------------------------- setup
-setup_detected() { # setup_detected <harness>
+setup_detected() { # setup_detected <harness>: is its command on PATH
   case "$1" in
-    claude)  command -v claude  >/dev/null 2>&1 || [ -d "$HOME/.claude" ] ;;
-    codex)   command -v codex   >/dev/null 2>&1 || [ -d "$HOME/.codex" ] ;;
-    copilot) command -v copilot >/dev/null 2>&1 || [ -d "$HOME/.copilot" ] ;;
-    cursor)  command -v cursor  >/dev/null 2>&1 || [ -d "$HOME/.cursor" ] ;;
-    gemini)  command -v gemini  >/dev/null 2>&1 || [ -d "$HOME/.gemini" ] ;;
+    claude|codex|copilot|gemini) command -v "$1" >/dev/null 2>&1 ;;
+    cursor) command -v cursor >/dev/null 2>&1 || command -v cursor-agent >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
+}
+
+# The MCP server needs bash 4.1+. Candidates are tried in order; a bare name is
+# looked up on PATH. AGENTWS_SETUP_BASH_CANDIDATES (colon-separated) overrides
+# the list for tests.
+SETUP_BASH_CANDIDATES="bash:/opt/homebrew/bin/bash:/usr/local/bin/bash"
+
+# setup_mcp_bash: on success prints "" when the PATH bash qualifies (the server
+# runs through its shebang) or the absolute path of the bash to run it with.
+# On failure prints the version of the first bash found, or "none", returns 1.
+setup_mcp_bash() {
+  local list="${AGENTWS_SETUP_BASH_CANDIDATES:-$SETUP_BASH_CANDIDATES}" c p v maj min found="" IFS=:
+  for c in $list; do
+    case "$c" in
+      */*) [ -x "$c" ] || continue; p="$c" ;;
+      *)   p="$(command -v "$c" 2>/dev/null)" || continue ;;
+    esac
+    # shellcheck disable=SC2016
+    v="$("$p" -c 'printf "%s %s %s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"' 2>/dev/null)" || continue
+    maj="${v%% *}"; v="${v#* }"; min="${v%% *}"; v="${v#* }"
+    case "$maj.$min" in .*|*.|*[!0-9.]*) continue ;; esac
+    [ -n "$found" ] || found="$v"
+    if [ "$maj" -gt 4 ] || { [ "$maj" -eq 4 ] && [ "$min" -ge 1 ]; }; then
+      case "$c" in */*) printf '%s' "$p" ;; esac
+      return 0
+    fi
+  done
+  printf '%s' "${found:-none}"
+  return 1
+}
+
+setup_bash_msg() { # setup_bash_msg <found-version>
+  printf 'MCP server needs bash 4.1+ (found %s). Install it (macOS: brew install bash), then rerun: agentws setup' "$1"
 }
 
 setup_skill_dir() { # setup_skill_dir <harness> -> personal skills dir
@@ -190,20 +220,48 @@ setup_link_skill() { # setup_link_skill <harness> <on|off>
   mkdir -p "$d" && ln -sfn "$AGENTWS_HOME_DIR/skills/agentws" "$l"
 }
 
+# The owner prefix already on the agentws entry, so re-wiring keeps it:
+# changing a prefix orphans the locks held under the old one.
+setup_prefix() { # setup_prefix <harness> -> prefix, default the harness name
+  local h="$1" p="" f
+  case "$h" in
+    claude) f="$HOME/.claude.json" ;;
+    codex)  f="$HOME/.codex/config.toml" ;;
+    *)      f="$(setup_json_file "$h")" ;;
+  esac
+  if [ -f "$f" ]; then
+    if [ "$h" = codex ]; then
+      p="$(awk '
+        /^[ \t]*\[/ { sec = $0; gsub(/[ \t]/, "", sec); next }
+        (sec == "[mcp_servers.agentws.env]" || sec == "[mcp_servers.agentws]") &&
+        /AGENTWS_OWNER_PREFIX"?[ \t]*=[ \t]*"/ {
+          sub(/.*AGENTWS_OWNER_PREFIX"?[ \t]*=[ \t]*"/, ""); sub(/".*/, ""); print; exit
+        }' "$f" 2>/dev/null)"
+    else
+      p="$(jq -r '.mcpServers.agentws.env.AGENTWS_OWNER_PREFIX // empty | strings' "$f" 2>/dev/null)"
+    fi
+  fi
+  printf '%s' "${p:-$h}"
+}
+
+# SETUP_MCP_BASH (set by cmd_setup) is empty to run the server through its
+# shebang, or the absolute bash to run it with.
 setup_mcp() { # setup_mcp <harness> <on|off>
-  local h="$1" mcp="$AGENTWS_HOME_DIR/mcp/agentws-mcp" f
+  local h="$1" mcp="$AGENTWS_HOME_DIR/mcp/agentws-mcp" f pre cmd=()
+  if [ -n "${SETUP_MCP_BASH:-}" ]; then cmd=("$SETUP_MCP_BASH" "$mcp"); else cmd=("$mcp"); fi
+  pre="$(setup_prefix "$h")"
   case "$h" in
     claude)
       command -v claude >/dev/null 2>&1 || { printf '  claude CLI not on PATH; skipped MCP\n' >&2; return 0; }
       claude mcp remove --scope user agentws >/dev/null 2>&1 || true
       [ "$2" = off ] && return 0
-      claude mcp add agentws --scope user --env AGENTWS_OWNER_PREFIX=claude -- "$mcp" >/dev/null
+      claude mcp add agentws --scope user --env "AGENTWS_OWNER_PREFIX=$pre" -- "${cmd[@]+"${cmd[@]}"}" >/dev/null
       ;;
     codex)
       command -v codex >/dev/null 2>&1 || { printf '  codex CLI not on PATH; skipped MCP\n' >&2; return 0; }
       codex mcp remove agentws >/dev/null 2>&1 || true
       [ "$2" = off ] && return 0
-      codex mcp add agentws --env AGENTWS_OWNER_PREFIX=codex -- "$mcp" >/dev/null
+      codex mcp add agentws --env "AGENTWS_OWNER_PREFIX=$pre" -- "${cmd[@]+"${cmd[@]}"}" >/dev/null
       ;;
     copilot|cursor|gemini)
       f="$(setup_json_file "$h")"
@@ -211,8 +269,8 @@ setup_mcp() { # setup_mcp <harness> <on|off>
         [ -f "$f" ] && json_edit "$f" 'del(.mcpServers.agentws)'
         return 0
       fi
-      json_edit "$f" --arg c "$mcp" --arg p "$h" --arg t "$h" '
-        .mcpServers.agentws = ({command:$c, args:[], env:{AGENTWS_OWNER_PREFIX:$p}}
+      json_edit "$f" --arg c "${cmd[0]}" --arg a "${SETUP_MCP_BASH:+$mcp}" --arg p "$pre" --arg t "$h" '
+        .mcpServers.agentws = ({command:$c, args:(if $a == "" then [] else [$a] end), env:{AGENTWS_OWNER_PREFIX:$p}}
           + (if $t == "copilot" then {type:"local", tools:["*"]}
              elif $t == "cursor" then {type:"stdio"} else {} end))'
       ;;
@@ -246,7 +304,7 @@ setup_state() { # setup_state <harness> -> "mcp skill" words: yes/no
 }
 
 # setup [harness...] [--check|--remove|--refresh]
-#   no names   every detected harness
+#   no names   every harness whose command is on PATH
 #   --check    report wiring, change nothing
 #   --remove   undo the wiring
 #   --refresh  re-link skills only where already set up (run by update)
@@ -272,6 +330,15 @@ cmd_setup() {
     printf 'setup: jq is required (the MCP server needs it too)\n' >&2
     return 1
   fi
+  # Without a bash that can run the server, MCP is reported and left unwired.
+  local SETUP_MCP_BASH="" mcp_ok=1
+  if [ -n "$names" ] && { [ "$mode" = on ] || [ "$mode" = check ]; }; then
+    if ! SETUP_MCP_BASH="$(setup_mcp_bash)"; then
+      mcp_ok=0
+      printf 'setup: %s\n' "$(setup_bash_msg "$SETUP_MCP_BASH")" >&2
+      SETUP_MCP_BASH=""
+    fi
+  fi
 
   for h in $names; do
     case "$mode" in
@@ -282,12 +349,15 @@ cmd_setup() {
         ;;
       *)
         [ "${QUIET:-0}" -eq 1 ] || printf '%s %s\n' "$([ "$mode" = on ] && echo wiring || echo removing)" "$h" >&2
-        setup_mcp "$h" "$mode" || { printf '  %s: MCP registration failed\n' "$h" >&2; rc=1; }
+        if [ "$mcp_ok" -eq 1 ]; then
+          setup_mcp "$h" "$mode" || { printf '  %s: MCP registration failed\n' "$h" >&2; rc=1; }
+        fi
         setup_link_skill "$h" "$mode" || rc=1
         [ "$h" = claude ] && { setup_claude_hook "$mode" || rc=1; }
         ;;
     esac
     st="$(setup_state "$h")"
+    [ "$mcp_ok" -eq 1 ] || st="no ${st#* }"
     objs+=("$(printf '{"harness":%s,"mcp":%s,"skill":%s}' "$(jstr "$h")" \
       "$(jbool "$([ "${st%% *}" = yes ] && echo 1)")" "$(jbool "$([ "${st#* }" = yes ] && echo 1)")")")
     [ "${JSON:-0}" -eq 1 ] || [ "$mode" = refresh ] || \
