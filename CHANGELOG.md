@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-10-01
+
 ### Added
 
 - `agentws submodules`: in a claimed slot, find submodules whose tracking
@@ -13,7 +15,9 @@ All notable changes to this project are recorded here. Format follows
   for all), show the staged gitlink diff, ask before pushing (`--push` skips
   that), then commit only those gitlinks, `git push`, open the PR with `gh`
   when installed, and recycle the slot. `--dry-run`, `--base`, `--json`.
-  ([#12])
+  (#12)
+- `--json` envelopes report an interrupt as `EINTR` (exit 130) instead of
+  printing nothing: the command's own cleanup runs first.
 
 ### Fixed
 
@@ -21,8 +25,6 @@ All notable changes to this project are recorded here. Format follows
   (`would clobber existing tag`). Tags are now force-fetched; the move is
   still taken only when it fast-forwards. Re-running the install one-liner
   heals an install that still has the old update code.
-
-[#12]: https://github.com/esola-thomas/agentws/issues/12
 
 ## [0.0.0] - 2026-10-01
 
@@ -103,5 +105,6 @@ across several workspaces.
   CLI, Cursor, and Gemini CLI entries follow their documented formats and have
   not been run here.
 
-[Unreleased]: https://github.com/esola-thomas/agentws/compare/v0.0.0...HEAD
+[Unreleased]: https://github.com/esola-thomas/agentws/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/esola-thomas/agentws/releases/tag/v0.0.1
 [0.0.0]: https://github.com/esola-thomas/agentws/releases/tag/v0.0.0
