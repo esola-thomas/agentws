@@ -1,6 +1,6 @@
 # submodules.sh - update submodule pointers in a claimed slot and open a PR.
 #
-#   agentws submodules [--yes] [--push] [--dry-run] [--base BRANCH]
+#   agentws submodules [--yes] [--push] [--dry-run] [--base BRANCH] [--json]
 #
 # Runs in a slot of its own: claim, branch off origin/<base>, find each direct
 # submodule whose tracking branch has moved ahead of the recorded gitlink, ask
@@ -16,14 +16,19 @@
 # Answers are read from stdin, so `printf 'y\nn\n' | agentws submodules` works
 # for scripts; end of input means no. --yes selects every candidate but still
 # asks before pushing; --push is the separate, explicit skip of that question.
+# --json cannot prompt, so it needs --dry-run or --yes --push.
 
 SM_PATHS=(); SM_NAMES=(); SM_BRANCHES=(); SM_CUR=(); SM_CAND=(); SM_COUNT=(); SM_SEL=()
 SM_ERRS=()
+SM_SLOT=""; SM_DIR=""; SM_BR=""; SM_BASE=""
+SM_PUSHED=0; SM_PR=""; SM_RECYCLED=0; SM_FINISHED=0
 
 _sm_ask() { # _sm_ask <question> -> 0 yes, 1 no
   local reply=""
   printf '%s [y/N] ' "$1" >&2
   IFS= read -r reply || { printf '\n' >&2; return 1; }
+  # Piped answers are not echoed by a terminal; echo them for the log.
+  [ -t 0 ] || printf '%s\n' "$reply" >&2
   case "$reply" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
@@ -47,98 +52,146 @@ _sm_tracking_branch() { # _sm_tracking_branch <slot-dir> <name> <sm-dir> <base>
   printf '%s' "$br"
 }
 
-# Hand the slot back. A pushed branch lives on the remote, so recycle is safe
-# right after the push. Gitlinks staged but not pushed are this command's own
-# work: unstage them and put the submodules back first, or recycle would
-# rightly refuse the slot. On failure the lock is kept and the user told.
-_sm_recycle() { # _sm_recycle <slot> <branch> [slot-dir]
-  if [ -n "${3:-}" ] && ! git -C "$3" diff --cached --quiet 2>/dev/null; then
-    git -C "$3" reset --quiet >/dev/null 2>&1
-    git -C "$3" submodule update --quiet --init --recursive >/dev/null 2>&1 || true
+# Hand the slot back, once. A pushed branch lives on the remote, so recycle is
+# safe right after the push. Gitlinks staged but not pushed are this command's
+# own work: unstage them and put the submodules back first, or recycle would
+# rightly refuse the slot. On failure the lock is kept and the exact recovery
+# command printed, with this run's owner, which may embed a pid.
+_sm_finish() {
+  [ "$SM_FINISHED" -eq 1 ] && return 0
+  SM_FINISHED=1
+  trap - INT TERM HUP
+  [ -n "$SM_SLOT" ] || return 0
+  if [ -d "$SM_DIR" ] && ! git -C "$SM_DIR" diff --cached --quiet 2>/dev/null; then
+    git -C "$SM_DIR" reset --quiet >/dev/null 2>&1
+    git -C "$SM_DIR" submodule update --quiet --init --recursive >/dev/null 2>&1 || true
   fi
-  if ! "$AGENTWS_BIN_DIR/agentws" --owner "$OWNER" recycle "$1" --branch "$2" >/dev/null 2>&1; then
-    printf 'could not recycle slot %s; it stays locked. Run: agentws recycle %s\n' "$1" "$1" >&2
-    return 8
+  if "$AGENTWS_BIN_DIR/agentws" --owner "$OWNER" recycle "$SM_SLOT" --branch "$SM_BR" >/dev/null 2>&1; then
+    SM_RECYCLED=1
+  else
+    printf 'could not recycle slot %s; it stays locked. Run: agentws --owner %s recycle %s\n' \
+      "$SM_SLOT" "$(sq "$OWNER")" "$SM_SLOT" >&2
   fi
 }
 
-cmd_submodules() {
-  local push=0 base="$AGENTWS_DEFAULT_BRANCH" a claim_env slot d br i n sm name path
-  local cur cand cnt nsel=0 title body subj pr_url="" pushed=0 cand_json=() rc=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --push) push=1; shift ;;
-      --base) [ $# -ge 2 ] || { printf 'submodules: --base needs a branch\n' >&2; return 2; }
-              base="$2"; shift 2 ;;
-      *) printf 'submodules: unknown argument %s\n' "$1" >&2; return 2 ;;
-    esac
-  done
-  br="agentws/submodules-$(date +%Y%m%d-%H%M%S)"
+_sm_interrupted() {
+  printf '\ninterrupted; handing the slot back\n' >&2
+  _sm_finish
+  exit 130
+}
 
-  # The lock lives exactly as long as this process unless the caller set a pid.
-  claim_env="$(AGENTWS_PID="${AGENTWS_PID:-$$}" "$AGENTWS_BIN_DIR/agentws" --owner "$OWNER" \
-    --branch "$br" claim "submodule pointer update" --print-env)" || return 5
-  # claim quotes every value for eval; read them back in a subshell.
-  slot="$(eval "$claim_env"; printf '%s' "${AGENTWS_SLOT:-}")"
-  d="$(eval "$claim_env"; printf '%s' "${AGENTWS_WS:-}")"
-  [ -n "$slot" ] && [ -d "$d" ] || { printf 'submodules: could not read the claimed slot\n' >&2; return 5; }
-  printf 'working in slot %s (%s)\n' "$slot" "$d" >&2
+# Every path out of cmd_submodules ends here: one envelope shape, always.
+_sm_result() { # _sm_result <rc>
+  local i=0 n=${#SM_PATHS[@]} cand_json=()
+  _sm_finish
+  if [ "${JSON:-0}" -eq 1 ]; then
+    while [ "$i" -lt "$n" ]; do
+      cand_json+=("$(printf '{"path":%s,"name":%s,"branch":%s,"current":%s,"candidate":%s,"commits":%s,"selected":%s}' \
+        "$(jstr "${SM_PATHS[$i]}")" "$(jstr "${SM_NAMES[$i]}")" "$(jstr "${SM_BRANCHES[$i]}")" \
+        "$(jstr "${SM_CUR[$i]}")" "$(jstr "${SM_CAND[$i]}")" "$(jnum "${SM_COUNT[$i]}")" \
+        "$(jbool "${SM_SEL[$i]}")")")
+      i=$((i + 1))
+    done
+    printf '{"slot":%s,"base":%s,"branch":%s,"dry_run":%s,"candidates":[%s],"errors":[%s],"pushed":%s,"pr_url":%s,"recycled":%s}' \
+      "$(jstr "$SM_SLOT")" "$(jstr "$SM_BASE")" "$(jstr "$SM_BR")" "$(jbool "${DRY:-0}")" \
+      "$(jjoin "${cand_json[@]+"${cand_json[@]}"}")" "$(jjoin "${SM_ERRS[@]+"${SM_ERRS[@]}"}")" \
+      "$(jbool "$SM_PUSHED")" "$(if [ -n "$SM_PR" ]; then jstr "$SM_PR"; else printf null; fi)" \
+      "$(jbool "$SM_RECYCLED")"
+  fi
+  # Once a branch is pushed the run succeeded; a failed recycle is reported
+  # in the result, not as a failure that would hide the pushed branch.
+  [ "$SM_PUSHED" -eq 1 ] && return 0
+  return "$1"
+}
 
-  if ! git -C "$d" fetch --quiet origin >&2 \
-     || ! git -C "$d" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then
-    printf 'submodules: cannot fetch origin/%s in %s\n' "$base" "$d" >&2
-    _sm_recycle "$slot" "$br" "$d"; return 8
-  fi
-  git -C "$d" checkout --quiet -b "$br" "origin/$base" >&2 || { _sm_recycle "$slot" "$br" "$d"; return 8; }
-  if [ ! -f "$d/.gitmodules" ]; then
-    printf 'no submodules in %s\n' "$base" >&2
-    _sm_recycle "$slot" "$br" "$d"
-    [ "${JSON:-0}" -eq 1 ] && printf '{"slot":%s,"base":%s,"candidates":[],"errors":[],"pushed":false}' \
-      "$(jstr "$slot")" "$(jstr "$base")"
-    return 0
-  fi
-  if ! GIT_TERMINAL_PROMPT=0 git -C "$d" submodule update --quiet --init --recursive >&2; then
-    _sm_err "." "git submodule update --init --recursive failed"
-  fi
-
-  # Direct submodules of the managed repository, as "name<TAB>path".
-  while IFS= read -r a; do
-    [ -n "$a" ] || continue
-    name="${a%% *}"; path="${a#* }"
-    name="${name#submodule.}"; name="${name%.path}"
+# Find candidates among the direct submodules of the checked-out slot.
+_sm_scan() { # _sm_scan <slot-dir> <base>
+  local d="$1" base="$2" rec key name path sm cur br cand cnt
+  # -z: "key\nvalue\0", so names and paths with spaces survive.
+  while IFS= read -r -d '' rec <&3; do
+    key="${rec%%
+*}"; path="${rec#*
+}"
+    name="${key#submodule.}"; name="${name%.path}"
     sm="$d/$path"
     cur="$(git -C "$d" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')"
     [ -n "$cur" ] || { _sm_err "$path" "no gitlink recorded in $base"; continue; }
     [ -e "$sm/.git" ] || { _sm_err "$path" "not initialised"; continue; }
-    if ! a="$(_sm_tracking_branch "$d" "$name" "$sm" "$base")"; then
+    git -C "$sm" cat-file -e "$cur^{commit}" 2>/dev/null \
+      || { _sm_err "$path" "recorded commit $(printf '%.7s' "$cur") not found in the submodule"; continue; }
+    if ! br="$(_sm_tracking_branch "$d" "$name" "$sm" "$base")"; then
       _sm_err "$path" "cannot determine the tracking branch (no .gitmodules branch, remote HEAD unreadable)"
       continue
     fi
     if ! GIT_TERMINAL_PROMPT=0 git -C "$sm" fetch --quiet origin \
-         "+refs/heads/$a:refs/remotes/origin/$a" 2>/dev/null; then
-      _sm_err "$path" "git fetch of origin/$a failed"
+         "+refs/heads/$br:refs/remotes/origin/$br" 2>/dev/null </dev/null; then
+      _sm_err "$path" "git fetch of origin/$br failed"
       continue
     fi
-    cand="$(git -C "$sm" rev-parse --verify --quiet "refs/remotes/origin/$a^{commit}")"
-    [ "$cand" != "$cur" ] || { printf '  %s %s is current on %s\n' "$(c_dim OK)" "$path" "$a" >&2; continue; }
+    cand="$(git -C "$sm" rev-parse --verify --quiet "refs/remotes/origin/$br^{commit}")"
+    [ "$cand" != "$cur" ] || { printf '  %s %s is current on %s\n' "$(c_dim OK)" "$path" "$br" >&2; continue; }
     if ! git -C "$sm" merge-base --is-ancestor "$cur" "$cand" 2>/dev/null; then
-      _sm_err "$path" "origin/$a ($(printf '%.7s' "$cand")) does not descend from the recorded $(printf '%.7s' "$cur"); skipped"
+      _sm_err "$path" "origin/$br ($(printf '%.7s' "$cand")) does not descend from the recorded $(printf '%.7s' "$cur"); skipped"
       continue
     fi
     cnt="$(git -C "$sm" rev-list --count "$cur..$cand")"
-    SM_PATHS+=("$path"); SM_NAMES+=("$name"); SM_BRANCHES+=("$a")
+    SM_PATHS+=("$path"); SM_NAMES+=("$name"); SM_BRANCHES+=("$br")
     SM_CUR+=("$cur"); SM_CAND+=("$cand"); SM_COUNT+=("$cnt"); SM_SEL+=(0)
-  done <<EOF
-$(git -C "$d" config -f "$d/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null)
-EOF
+  done 3< <(git -C "$d" config -z -f "$d/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null)
+}
+
+cmd_submodules() {
+  local push=0 claim_env d i n path nsel=0 title body="" subj="" want got pr_out
+  SM_BASE="$AGENTWS_DEFAULT_BRANCH"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --push) push=1; shift ;;
+      --base) [ $# -ge 2 ] || { printf 'submodules: --base needs a branch\n' >&2; return 2; }
+              SM_BASE="$2"; shift 2 ;;
+      *) printf 'submodules: unknown argument %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+  if [ "${JSON:-0}" -eq 1 ] && [ "${DRY:-0}" -ne 1 ] && { [ "${ASSUME_YES:-0}" -ne 1 ] || [ "$push" -ne 1 ]; }; then
+    printf 'submodules: --json cannot prompt; use --dry-run, or --yes --push\n' >&2
+    return 2
+  fi
+  SM_BR="agentws/submodules-$(date +%Y%m%d-%H%M%S)-$$"
+
+  # The lock lives exactly as long as this process unless the caller set a pid.
+  claim_env="$(AGENTWS_PID="${AGENTWS_PID:-$$}" "$AGENTWS_BIN_DIR/agentws" --owner "$OWNER" \
+    --branch "$SM_BR" claim "submodule pointer update" --print-env)" || return 5
+  # claim quotes every value for eval; read them back in a subshell.
+  SM_SLOT="$(eval "$claim_env"; printf '%s' "${AGENTWS_SLOT:-}")"
+  SM_DIR="$(eval "$claim_env"; printf '%s' "${AGENTWS_WS:-}")"
+  trap _sm_interrupted INT TERM HUP
+  if [ -z "$SM_SLOT" ] || [ ! -d "$SM_DIR" ]; then
+    printf 'submodules: could not read the claimed slot\n' >&2
+    _sm_result 5; return $?
+  fi
+  d="$SM_DIR"
+  printf 'working in slot %s (%s)\n' "$SM_SLOT" "$d" >&2
+
+  if ! git -C "$d" fetch --quiet origin >&2 \
+     || ! git -C "$d" rev-parse --verify --quiet "origin/$SM_BASE^{commit}" >/dev/null; then
+    printf 'submodules: cannot fetch origin/%s\n' "$SM_BASE" >&2
+    _sm_result 8; return $?
+  fi
+  git -C "$d" checkout --quiet -b "$SM_BR" "origin/$SM_BASE" >&2 || { _sm_result 8; return $?; }
+  if [ ! -f "$d/.gitmodules" ]; then
+    printf 'no submodules in %s\n' "$SM_BASE" >&2
+    _sm_result 0; return $?
+  fi
+  GIT_TERMINAL_PROMPT=0 git -C "$d" submodule update --quiet --init --recursive >&2 </dev/null \
+    || _sm_err "." "git submodule update --init --recursive failed"
+  _sm_scan "$d" "$SM_BASE"
 
   n=${#SM_PATHS[@]}
   i=0
   while [ "$i" -lt "$n" ]; do
-    path="${SM_PATHS[$i]}"; sm="$d/$path"
+    path="${SM_PATHS[$i]}"
     printf '\n%s  %.7s -> %.7s  (%s commits on %s)\n' "$path" "${SM_CUR[$i]}" "${SM_CAND[$i]}" \
       "${SM_COUNT[$i]}" "${SM_BRANCHES[$i]}" >&2
-    git -C "$sm" log --oneline --no-decorate -n 10 "${SM_CUR[$i]}..${SM_CAND[$i]}" 2>/dev/null \
+    git -C "$d/$path" log --oneline --no-decorate -n 10 "${SM_CUR[$i]}..${SM_CAND[$i]}" 2>/dev/null \
       | sed 's/^/    /' >&2
     [ "${SM_COUNT[$i]}" -gt 10 ] && printf '    ... and %s more\n' "$((SM_COUNT[i] - 10))" >&2
     if [ "${DRY:-0}" -eq 1 ]; then
@@ -151,73 +204,73 @@ EOF
 
   if [ "$n" -eq 0 ]; then
     printf '\nno submodule has a newer commit to take\n' >&2
+    _sm_result 0; return $?
   elif [ "${DRY:-0}" -eq 1 ]; then
     printf '\ndry run: %s candidate(s), nothing changed\n' "$n" >&2
+    _sm_result 0; return $?
   elif [ "$nsel" -eq 0 ]; then
     printf '\nnothing selected\n' >&2
+    _sm_result 0; return $?
   fi
 
-  if [ "${DRY:-0}" -ne 1 ] && [ "$nsel" -gt 0 ]; then
-    i=0; subj=""; body=""
-    while [ "$i" -lt "$n" ]; do
-      if [ "${SM_SEL[$i]}" = 1 ]; then
-        path="${SM_PATHS[$i]}"
-        git -C "$d/$path" checkout --quiet --detach "${SM_CAND[$i]}" >&2 \
-          && git -C "$d" add -- "$path" \
-          || { _sm_err "$path" "could not move to ${SM_CAND[$i]}"; rc=8; }
-        subj="${subj:+$subj, }$path"
-        body="${body}$(printf -- '- %s: %.7s..%.7s (%s commits on %s)' "$path" "${SM_CUR[$i]}" \
-          "${SM_CAND[$i]}" "${SM_COUNT[$i]}" "${SM_BRANCHES[$i]}")
+  i=0; want=""
+  while [ "$i" -lt "$n" ]; do
+    if [ "${SM_SEL[$i]}" = 1 ]; then
+      path="${SM_PATHS[$i]}"
+      if ! git -C "$d/$path" checkout --quiet --detach "${SM_CAND[$i]}" >&2 \
+         || ! git -C "$d" add -- "$path"; then
+        _sm_err "$path" "could not move to ${SM_CAND[$i]}"
+        _sm_result 8; return $?
+      fi
+      want="${want}${path}
 "
-      fi
-      i=$((i + 1))
-    done
-    if [ "$rc" -ne 0 ]; then
-      _sm_recycle "$slot" "$br" "$d"; return "$rc"
+      subj="${subj:+$subj, }$path"
+      body="${body}$(printf -- '- %s: %.7s..%.7s (%s commits on %s)' "$path" "${SM_CUR[$i]}" \
+        "${SM_CAND[$i]}" "${SM_COUNT[$i]}" "${SM_BRANCHES[$i]}")
+"
     fi
-    printf '\nPointer changes for %s:\n' "$base" >&2
-    git -C "$d" --no-pager diff --cached --submodule=log >&2
-    git -C "$d" --no-pager diff --cached --stat >&2
+    i=$((i + 1))
+  done
+  printf '\nPointer changes for %s:\n' "$SM_BASE" >&2
+  git -C "$d" --no-pager diff --cached --submodule=log >&2
+  git -C "$d" --no-pager diff --cached --stat >&2
 
-    if [ "$push" -eq 1 ] || _sm_ask "Commit, push $br, and open a PR into $base?"; then
-      title="Update submodule pointers: $subj"
-      if git -C "$d" commit --quiet -m "$title" -m "$body" >&2 \
-         && GIT_TERMINAL_PROMPT=0 git -C "$d" push --quiet -u origin "$br" >&2; then
-        pushed=1
-        printf 'pushed %s\n' "$br" >&2
-        if command -v "${AGENTWS_GH:-gh}" >/dev/null 2>&1; then
-          pr_url="$(cd "$d" && "${AGENTWS_GH:-gh}" pr create --base "$base" --head "$br" \
-            --title "$title" --body "$body" 2>/dev/null | tail -1)" || pr_url=""
-        fi
-        if [ -n "$pr_url" ]; then
-          printf 'opened %s\n' "$pr_url" >&2
-        else
-          printf 'Open a pull request from %s into %s on your forge.\n' "$br" "$base" >&2
-        fi
-      else
-        printf 'commit or push failed; nothing was pushed\n' >&2
-        rc=8
-      fi
-    else
-      printf 'not pushed; the slot is reset\n' >&2
-    fi
+  if [ "$push" -ne 1 ] && ! _sm_ask "Commit, push $SM_BR, and open a PR into $SM_BASE?"; then
+    printf 'not pushed; the slot is reset\n' >&2
+    _sm_result 0; return $?
   fi
 
-  _sm_recycle "$slot" "$br" "$d" || rc=8
-
-  if [ "${JSON:-0}" -eq 1 ]; then
-    i=0
-    while [ "$i" -lt "$n" ]; do
-      cand_json+=("$(printf '{"path":%s,"name":%s,"branch":%s,"current":%s,"candidate":%s,"commits":%s,"selected":%s}' \
-        "$(jstr "${SM_PATHS[$i]}")" "$(jstr "${SM_NAMES[$i]}")" "$(jstr "${SM_BRANCHES[$i]}")" \
-        "$(jstr "${SM_CUR[$i]}")" "$(jstr "${SM_CAND[$i]}")" "$(jnum "${SM_COUNT[$i]}")" \
-        "$(jbool "${SM_SEL[$i]}")")")
-      i=$((i + 1))
-    done
-    printf '{"slot":%s,"base":%s,"branch":%s,"dry_run":%s,"candidates":[%s],"errors":[%s],"pushed":%s,"pr_url":%s}' \
-      "$(jstr "$slot")" "$(jstr "$base")" "$(jstr "$br")" "$(jbool "${DRY:-0}")" \
-      "$(jjoin "${cand_json[@]+"${cand_json[@]}"}")" "$(jjoin "${SM_ERRS[@]+"${SM_ERRS[@]}"}")" \
-      "$(jbool "$pushed")" "$(if [ -n "$pr_url" ]; then jstr "$pr_url"; else printf null; fi)"
+  title="Update submodule pointers: $subj"
+  git -C "$d" commit --quiet -m "$title" -m "$body" >&2 || {
+    printf 'commit failed; nothing was pushed\n' >&2
+    _sm_result 8; return $?
+  }
+  # The commit must hold exactly the selected gitlinks, whatever a hook did.
+  want="$(printf '%s' "$want" | LC_ALL=C sort)"
+  got="$(git -C "$d" diff-tree --no-commit-id --name-only -r HEAD | LC_ALL=C sort)"
+  if [ "$got" != "$want" ]; then
+    _sm_err "." "the commit contains files other than the selected gitlinks; nothing was pushed"
+    _sm_result 8; return $?
   fi
-  return "$rc"
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$d" push --quiet -u origin "$SM_BR" >&2; then
+    printf 'push failed; the commit is discarded with the slot\n' >&2
+    _sm_result 8; return $?
+  fi
+  SM_PUSHED=1
+  printf 'pushed %s\n' "$SM_BR" >&2
+  if command -v "${AGENTWS_GH:-gh}" >/dev/null 2>&1; then
+    pr_out="$(cd "$d" && "${AGENTWS_GH:-gh}" pr create --base "$SM_BASE" --head "$SM_BR" \
+      --title "$title" --body "$body" 2>&1 </dev/null)" || true
+    pr_out="$(printf '%s\n' "$pr_out" | tail -1)"
+    case "$pr_out" in
+      http://*|https://*) SM_PR="$pr_out" ;;
+      *) printf 'gh pr create failed: %s\n' "$pr_out" >&2 ;;
+    esac
+  fi
+  if [ -n "$SM_PR" ]; then
+    printf 'opened %s\n' "$SM_PR" >&2
+  else
+    printf 'Open a pull request from %s into %s on your forge.\n' "$SM_BR" "$SM_BASE" >&2
+  fi
+  _sm_result 0
 }

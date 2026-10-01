@@ -93,7 +93,10 @@ recorded pointer; anything else (fetch error, unknown branch, diverged
 history) is reported and left alone. For each candidate it shows the commits
 and asks; then it shows the exact staged gitlink diff and asks once more before
 committing only those gitlinks, pushing with `git push`, and opening the PR
-with `gh` if it is installed. The slot is recycled at the end either way.
+with `gh` if it is installed. The slot is recycled at the end, also after
+Ctrl-C. If recycling fails (for example, a submodule remote is unreachable, so
+the slot cannot be resynced), the slot stays locked and the exact recovery
+command, with this run's owner, is printed.
 
 | Option | Effect |
 |---|---|
@@ -101,12 +104,16 @@ with `gh` if it is installed. The slot is recycled at the end either way.
 | `--push` | Skip the question before pushing, for automation. |
 | `--dry-run` | Report candidates; change, commit, and push nothing. |
 | `--base BRANCH` | Branch from and target `BRANCH` instead of `default_branch`. |
-| `--json` | One envelope with candidates, errors, branch, and PR URL. |
+| `--json` | One envelope: `slot`, `base`, `branch`, `dry_run`, `candidates`, `errors`, `pushed`, `pr_url`, `recycled`. It cannot prompt, so it needs `--dry-run` or `--yes --push`. |
 
 Answers are read from stdin, so `printf 'y\nn\ny\n' | agentws submodules`
 scripts it; end of input means no. Nested submodules are checked out, but only
 the managed repository's own gitlinks change: a nested pointer belongs to its
-parent submodule's repository. `AGENTWS_GH` names a different `gh` binary.
+parent submodule's repository. The commit is checked before pushing: if it
+holds anything besides the selected gitlinks (a hook added files), nothing is
+pushed. Once a branch is pushed the run reports success even if recycling then
+fails, so `pushed` and `pr_url` are never lost. `AGENTWS_GH` names a different
+`gh` binary.
 
 ## Updates
 

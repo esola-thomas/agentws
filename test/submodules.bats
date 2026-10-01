@@ -178,13 +178,84 @@ slot_free() { [ "$(agentws status --json | jq -r --arg s "$1" '.data.slots[] | s
   slot_free 1
 }
 
-@test "an unreachable submodule remote keeps the slot locked and says so" {
+@test "a pushed run whose slot cannot be recycled still reports the push" {
   advance b
   mv "$R/a.git" "$R/a.gone"
+  run agentws submodules --yes --push --json
+  [ "$status" -eq 0 ]
+  local env; env="$(printf '%s\n' "$output" | tail -1)"
+  [ "$(printf '%s' "$env" | jq -r '.data.pushed')" = true ]
+  [ "$(printf '%s' "$env" | jq -r '.data.recycled')" = false ]
+  [[ "$output" == *"a: not initialised"* ]]
+  [[ "$output" == *"Run: agentws --owner 'tester' recycle 1"* ]]
+}
+
+@test "interrupting at a prompt hands the slot back" {
+  advance a
+  run bash -c "sleep 30 | timeout -s TERM 3 '$AGENTWS_BIN' submodules"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"interrupted"* ]]
+  [ -z "$(pushed_branch)" ]
+  slot_free 1
+  [ -z "$(git -C "$SANDBOX/src" for-each-ref 'refs/heads/agentws/*')" ]
+}
+
+@test "--json refuses to prompt and claims nothing" {
+  advance a
+  run agentws submodules --yes --json
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--json cannot prompt"* ]]
+  slot_free 1; slot_free 2
+}
+
+@test "a submodule path with a space is handled" {
+  make_remote c
+  git -C "$SANDBOX/wp" submodule add -q "$R/c.git" "my mod"
+  git -C "$SANDBOX/wp" commit -q -m "add my mod"
+  git -C "$SANDBOX/wp" push -q origin main
+  advance c
+  run agentws submodules --yes --push
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$R/parent.git" diff --name-only main "$(pushed_branch)")" = "my mod" ]
+}
+
+@test "a commit that gains other files is never pushed" {
+  advance a
+  mkdir -p "$SANDBOX/hooks"
+  printf '#!/bin/sh
+echo extra > extra.txt
+git add extra.txt
+' > "$SANDBOX/hooks/pre-commit"
+  chmod +x "$SANDBOX/hooks/pre-commit"
+  git config --file "$GIT_CONFIG_GLOBAL" core.hooksPath "$SANDBOX/hooks"
   run agentws submodules --yes --push
   [ "$status" -ne 0 ]
-  [[ "$output" == *"a: not initialised"* ]]
-  [[ "$output" == *"stays locked"* ]]
+  [[ "$output" == *"other than the selected gitlinks"* ]]
+  [ -z "$(pushed_branch)" ]
+}
+
+@test "--base branches from and targets another branch; branch = . follows it" {
+  git -C "$SANDBOX/wp" checkout -q -b develop
+  git -C "$SANDBOX/wp" config -f .gitmodules submodule.a.branch .
+  git -C "$SANDBOX/wp" commit -q -am "a follows the superproject branch"
+  git -C "$SANDBOX/wp" push -q origin develop
+  git -C "$SANDBOX/wa" checkout -q -b develop
+  git -C "$SANDBOX/wa" commit -q --allow-empty -m "a on develop"
+  git -C "$SANDBOX/wa" push -q origin develop
+  run agentws submodules --base develop --yes --push --json
+  [ "$status" -eq 0 ]
+  local env br; env="$(printf '%s\n' "$output" | tail -1)"
+  [ "$(printf '%s' "$env" | jq -r '.data.candidates[0].branch')" = develop ]
+  br="$(pushed_branch)"
+  [ "$(git -C "$R/parent.git" merge-base develop "$br")" = "$(git -C "$R/parent.git" rev-parse develop)" ]
+  [ "$(gitlink "$br" a)" = "$(git -C "$R/a.git" rev-parse develop)" ]
+  grep -q -- "--base develop" "$SANDBOX/gh.log"
+}
+
+@test "every JSON result has the same keys" {
+  run agentws submodules --dry-run --json
+  local keys; keys="$(printf '%s\n' "$output" | tail -1 | jq -c '.data | keys')"
+  [ "$keys" = '["base","branch","candidates","dry_run","errors","pr_url","pushed","recycled","slot"]' ]
 }
 
 @test "nested submodules are checked out but only direct gitlinks are candidates" {

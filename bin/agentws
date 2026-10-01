@@ -23,7 +23,8 @@
 #   agentws destroy <slot>         remove a slot via the provider
 #   agentws doctor [slot...]       health checks, core plus provider
 #   agentws submodules             update submodule pointers in a slot, push, open a PR
-#                                  (--yes all candidates, --push no final prompt, --base B)
+#                                  (--yes all candidates, --push no final prompt,
+#                                   --dry-run preview, --base B)
 #   agentws config                 show the resolved configuration
 #
 # Every command supports --json. Output is one envelope line on stdout:
