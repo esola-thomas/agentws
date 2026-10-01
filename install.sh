@@ -78,6 +78,9 @@ main() {
       say "updating $src"
       [ -n "${AGENTWS_UPDATE_CHANNEL:-}" ] && \
         printf 'channel=%s\n' "$AGENTWS_UPDATE_CHANNEL" > "$src/.git/agentws-managed"
+      # Fetch here too, with --force, so re-running the installer heals an
+      # install whose own update predates force-fetching moved tags.
+      GIT_TERMINAL_PROMPT=0 git -C "$src" fetch --quiet --tags --force --prune origin || return 1
       "$src/bin/agentws" update || return 1
     else
       [ -e "$src" ] && { err "$src exists and is not an agentws install; set AGENTWS_HOME"; return 1; }

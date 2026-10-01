@@ -564,3 +564,35 @@ piped_install() {
   run bash -c "printf '%s\n' '[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]' | '$AGENTWS_REPO_ROOT/mcp/agentws-mcp' 2>/dev/null"
   [ "$(printf '%s' "$output" | jq -r .error.code)" = "-32600" ]
 }
+
+@test "a release tag moved forward on the remote is followed, not a fetch failure" {
+  make_origin
+  git -C "$ORIGIN" tag v9.0.0
+  piped_install >/dev/null 2>&1
+  git -C "$ORIGIN" commit -q --allow-empty -m recut
+  git -C "$ORIGIN" tag -f v9.0.0 >/dev/null
+  run "$HOME/bin/agentws" update
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$HOME/.local/share/agentws" rev-parse HEAD)" = "$(git -C "$ORIGIN" rev-parse v9.0.0)" ]
+
+  # Moved back to an ancestor: fetched, but never taken.
+  git -C "$ORIGIN" tag -f v9.0.0 HEAD~1 >/dev/null
+  run "$HOME/bin/agentws" update
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$HOME/.local/share/agentws" rev-parse HEAD)" = "$(git -C "$ORIGIN" rev-parse main)" ]
+}
+
+@test "re-running the installer heals an install whose update cannot fetch a moved tag" {
+  make_origin
+  # The installed release carries the old update code, without --force.
+  sed -i.bak 's/ --tags --force --prune origin/ --tags --prune origin/' "$ORIGIN/lib/update.sh"
+  rm -f "$ORIGIN/lib/update.sh.bak"
+  git -C "$ORIGIN" commit -q -am "old update code"
+  git -C "$ORIGIN" tag v9.0.0
+  piped_install >/dev/null 2>&1
+  git -C "$ORIGIN" commit -q --allow-empty -m recut
+  git -C "$ORIGIN" tag -f v9.0.0 >/dev/null
+  run piped_install
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$HOME/.local/share/agentws" rev-parse HEAD)" = "$(git -C "$ORIGIN" rev-parse v9.0.0)" ]
+}
