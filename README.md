@@ -34,7 +34,11 @@ Requirements: bash, git, and jq. Linux, macOS, or WSL2.
 cd ~/code/myrepo
 agentws init          # creates ~/code/myrepo-ws with 3 slots
 agentws status        # who holds what
+agentws sync          # fetch everywhere; park the reference slot at origin/<default>
 ```
+
+`sync` updates remote-tracking refs and the reference slot only. It never
+moves a work slot or your branch; `agentws refresh` advances idle slots.
 
 That is the whole setup. Start your agents as usual. They see the farm, claim a
 slot, work in it, and recycle it. You never assign directories by hand.

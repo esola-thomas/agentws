@@ -16,7 +16,8 @@
 | `locks` | All locks with age and remaining TTL. |
 | `recycle <slot>` / `done <slot>` | After merge: fetch, park detached at `origin/<default>`, delete the task branch, release. |
 | `refresh [slot...]` | Park idle slots detached at `origin/<default>`, healing phantom dirt. |
-| `sync [slot...]` / `prune [slot...]` | Fetch; delete merged local branches. |
+| `sync [slot...]` | Fetch and prune in every slot, and park the reference slot detached at `origin/<default>`. It does not update work slots or your branch: `refresh` advances idle slots, and a slot you hold is yours to rebase. Exits non-zero when a fetch fails or the reference is dirty. |
+| `prune [slot...]` | Delete merged local branches. |
 | `create <slot>` / `destroy <slot>` | Make or remove a slot through the provider. |
 | `doctor [slot...]` | Health checks. `--fix-env` provisions environments. |
 | `submodules` | Update submodule pointers in a claimed slot, push, and open a PR. See below. |

@@ -37,7 +37,7 @@ provider_slot_destroy() { # <slot> <abs-path>
 }
 
 provider_slot_doctor() { # <slot> <abs-path>
-  local d="$2" bad=0 br
+  local d="$2"
   if [ -d "$d/.git" ]; then
     printf 'OK clone %s\n' "$d"
   else
@@ -45,25 +45,10 @@ provider_slot_doctor() { # <slot> <abs-path>
     return 1
   fi
 
-  br="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  if [ -n "$br" ]; then
-    printf 'OK branch %s\n' "$br"
-  else
-    printf 'FAIL branch HEAD unresolvable in %s\n' "$d"
-    bad=1
-  fi
-
   if git -C "$d" remote get-url origin >/dev/null 2>&1; then
     printf 'OK remote origin %s\n' "$(git -C "$d" remote get-url origin 2>/dev/null)"
   else
     printf 'WARN remote no origin configured\n'
   fi
-
-  if [ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]; then
-    printf 'WARN worktree uncommitted changes present\n'
-  else
-    printf 'OK worktree clean\n'
-  fi
-
-  return $bad
+  # branch, upstream, and worktree are core doctor checks.
 }

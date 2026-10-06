@@ -215,3 +215,79 @@ shared_main_layout() {
   [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.data.slots[] | select(.slot=="1") | .status')" = "skipped" ]
   [ "$(git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
 }
+
+# ------------------------------------------------------- reference and sync
+# Slot 1 as the reference, in the state the old sync left it: on main, which
+# the source repo also has checked out.
+reference_on_main() {
+  git -C "$ROOT/1_proj" checkout -q --ignore-other-worktrees main
+  printf 'reference_slot: "1"\n' >> "$CONFIG"
+}
+
+@test "sync heals the reference's phantom dirt and parks it at origin/main" {
+  reference_on_main
+  advance_main
+  git -C "$ROOT/1_proj" fetch -q origin
+  run agentws sync --json 1
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.data.synced[0].status')" = "ok" ]
+  parked "$ROOT/1_proj"
+
+  # Detached now, so the next advance reaches it through sync alone.
+  advance_main
+  run agentws sync 1
+  [ "$status" -eq 0 ]
+  parked "$ROOT/1_proj"
+}
+
+@test "sync on a dirty reference names the paths and exits non-zero" {
+  reference_on_main
+  advance_main
+  printf 'local\n' >> "$ROOT/1_proj/file"
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"M file"* ]]
+  [[ "$output" == *"sync failed: 1_proj"* ]]
+  [ "$(git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
+
+  run agentws sync --json 1
+  [ "$status" -eq 8 ]
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.error.code')" = "EGIT" ]
+}
+
+@test "sync refuses a detached reference carrying its own commits" {
+  printf 'reference_slot: "1"\n' >> "$CONFIG"
+  printf 'mine\n' > "$ROOT/1_proj/mine"
+  git -C "$ROOT/1_proj" add mine
+  git -C "$ROOT/1_proj" commit -q -m mine
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  git -C "$ROOT/1_proj" cat-file -e HEAD:mine
+}
+
+@test "status and doctor show a detached slot as detached@sha" {
+  local sha
+  sha="$(git -C "$ROOT/2_proj" rev-parse --short HEAD)"
+  run agentws status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"detached@$sha"* ]]
+  [[ "$output" != *"no upstream"* ]]
+  [ "$(agentws status --json | jq -r '.data.slots[] | select(.slot=="2") | .branch')" = "detached@$sha" ]
+  [ "$(agentws status --json | jq -r '.data.slots[] | select(.slot=="2") | .warnings | length')" -eq 0 ]
+
+  run agentws doctor --json 2
+  [ "$(printf '%s' "$output" | jq -r '.data.ok')" = "true" ]
+  [ "$(printf '%s' "$output" | jq -r '.data.slots[0].checks[] | select(.id=="branch") | .detail')" = "detached@$sha" ]
+}
+
+@test "doctor reports each check once and warns for a reference off the default branch" {
+  printf 'reference_slot: "1"\n' >> "$CONFIG"
+  git -C "$ROOT/1_proj" switch -q -c feat/x
+  run agentws doctor --json 1
+  [ "$(printf '%s' "$output" | jq -r '[.data.slots[0].checks[].id] | length == (unique | length)')" = "true" ]
+  [ "$(printf '%s' "$output" | jq -r '.data.slots[0].checks[] | select(.id=="branch") | .status')" = "warn" ]
+
+  git -C "$ROOT/1_proj" checkout -q --detach origin/main
+  run agentws doctor --json 1
+  [ "$(printf '%s' "$output" | jq -r '.data.slots[0].checks[] | select(.id=="branch") | .status')" = "pass" ]
+}

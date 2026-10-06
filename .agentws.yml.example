@@ -34,7 +34,7 @@ slots: [0, 1, 2, 3, lab]
 # How a slot id becomes a directory name under root. Default: "{slot}_{top}"
 slot_name_format: "{slot}_{top}"  # -> 0_myproj, 1_myproj, ... lab_myproj
 
-reference_slot: "0"               # never branched, never pruned
+reference_slot: "0"               # parked at origin/<default> by sync; never pruned
 exclude_from_claim: ["0", "lab"]  # claim skips these; lock them explicitly
 
 # Default and maximum claim lifetime. A shorter claim --ttl is stored per lock.
