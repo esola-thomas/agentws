@@ -40,6 +40,7 @@ end-of-task cleanup.
 | `workspace_prune` | `session` (optional `slot`, `confirm`) |
 | `workspace_create` | `session`, `slot` (optional `with_env`) |
 | `workspace_recycle` | `session`, `slot` (optional `branch`, `clean_untracked`) |
+| `workspace_reap` | `session` (optional `confirm`; false previews) |
 | `workspace_done` | same as `workspace_recycle` |
 
 Each returns one text content block holding the exact agentws envelope:
