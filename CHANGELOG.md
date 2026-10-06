@@ -6,6 +6,12 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `agentws prune`: `--dry-run` says `would delete` instead of `deleted`; each
+  repo is scanned once instead of once per slot; any branch checked out in any
+  worktree is never a candidate. `--json` records gain `would_delete`. (#23)
+
 ## [0.0.1] - 2026-10-01
 
 ### Added
