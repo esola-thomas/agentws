@@ -16,7 +16,9 @@ provider_slot_create() { # <slot> <abs-path>
   [ -n "$src" ] || die "fullclone requires provider_opts.source_repo"
   [ -e "$d" ] && die "$d already exists"
   # Unquoted on purpose: clone_flags is a caller-supplied flag list.
-  run git clone --branch "$AGENTWS_DEFAULT_BRANCH" ${AGENTWS_P_clone_flags:-} "$src" "$d"
+  run git clone --branch "$AGENTWS_DEFAULT_BRANCH" ${AGENTWS_P_clone_flags:-} "$src" "$d" || return $?
+  # Parked detached at the remote tip: the only state slot_claimable accepts.
+  run git -C "$d" checkout --quiet --detach "origin/$AGENTWS_DEFAULT_BRANCH"
 }
 
 provider_slot_destroy() { # <slot> <abs-path>

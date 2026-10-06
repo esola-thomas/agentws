@@ -57,6 +57,27 @@ slot_branch() { # slot_branch <slot>
   git -C "$(provider_slot_path "$1")" branch --show-current 2>/dev/null || true
 }
 
+# PREDICATE: the idle shape. HEAD is detached at a commit origin/<default>
+# contains, so no other slot can move it and a worker's
+# `checkout -b <branch> origin/<base>` leaves nothing behind.
+slot_parked() { # slot_parked <slot>
+  local d
+  d="$(provider_slot_path "$1")"
+  git -C "$d" symbolic-ref -q HEAD >/dev/null 2>&1 && return 1
+  git -C "$d" merge-base --is-ancestor HEAD "origin/$AGENTWS_DEFAULT_BRANCH" 2>/dev/null
+}
+
+# Other worktrees that have this slot's branch checked out, one path per line.
+# git refuses that without --force, and the ref moves under all of them at once.
+slot_branch_elsewhere() { # slot_branch_elsewhere <slot>
+  local d ref me
+  d="$(provider_slot_path "$1")"
+  ref="$(git -C "$d" symbolic-ref -q HEAD 2>/dev/null)" || return 0
+  me="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  git -C "$d" worktree list --porcelain 2>/dev/null \
+    | awk -v ref="branch $ref" -v me="$me" '/^worktree /{wt=substr($0,10)} $0==ref && wt!=me {print wt}'
+}
+
 slot_dirty_count() { # slot_dirty_count <slot> -> integer
   local n
   n="$(git -C "$(provider_slot_path "$1")" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
@@ -70,7 +91,8 @@ slot_untracked() { # slot_untracked <slot> -> paths, one per line
 
 # Print the prior default-branch commit whose tree still occupies the index.
 # A match proves that every tracked difference is explained by the shared
-# default-branch ref advancing in another worktree.
+# default-branch ref advancing in another worktree. Only a slot left on the
+# default branch can get here; a parked slot shares no ref.
 slot_phantom_base() { # slot_phantom_base <slot>
   local s="$1" d target head index_tree commit commit_tree
   provider_slot_exists "$s" || return 1
@@ -206,14 +228,13 @@ slot_ahead_behind() { # slot_ahead_behind <slot> -> "<ahead> <behind>"
 # drift. A slot is claimable when it is:
 #   a work slot (not the reference slot, not in exclude_from_claim),
 #   it exists, it is not actively locked, its tree is clean,
-#   and it is on the default branch.
+#   and it is parked (slot_parked).
 slot_claimable() { # slot_claimable <slot>
   [ "$(slot_role "$1")" = "work" ] || return 1
   provider_slot_exists "$1" || return 1
   lock_active "$1" && return 1
   [ "$(slot_dirty_count "$1")" = "0" ] || return 1
-  [ "$(slot_branch "$1")" = "$AGENTWS_DEFAULT_BRANCH" ] || return 1
-  return 0
+  slot_parked "$1"
 }
 
 # The weaker predicate `free` reports on. Deliberately NOT the same as
@@ -226,8 +247,7 @@ slot_free() { # slot_free <slot>
   provider_slot_exists "$1" || return 1
   lock_active "$1" && return 1
   [ "$(slot_dirty_count "$1")" = "0" ] || return 1
-  [ "$(slot_branch "$1")" = "$AGENTWS_DEFAULT_BRANCH" ] || return 1
-  return 0
+  slot_parked "$1"
 }
 
 # ------------------------------------------------------------------- json

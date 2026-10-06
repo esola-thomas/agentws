@@ -185,7 +185,7 @@ provider search path (after any `AGENTWS_PROVIDER_PATH` from the environment),
 so a project can keep a private provider beside its config. Canonicalisation matters: two symlinked paths to one physical checkout
 must not produce two different lock files.
 
-`auto_refresh` enables safe claim-time phantom recovery. `auto_release` and
+`auto_refresh` enables safe claim-time refresh of idle slots that are not parked. `auto_release` and
 `auto_release_minutes` enable doctor's conservative finished-slot observation
 and reaping. Both behaviors are disabled by default.
 

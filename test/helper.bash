@@ -63,6 +63,9 @@ make_slot_repo() { # make_slot_repo <slot>
   : > "$d/README"
   git -C "$d" add README
   git -C "$d" commit -q -m init
+  # Parked like a provider-made slot: detached at origin/main.
+  git -C "$d" update-ref refs/remotes/origin/main HEAD
+  git -C "$d" checkout -q --detach
 }
 
 agentws() { "$AGENTWS_BIN" "$@"; }

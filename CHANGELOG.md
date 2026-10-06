@@ -6,8 +6,27 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Idle slots are parked detached at `origin/<default>` instead of sharing the
+  default branch. `create` (worktree and fullclone), `recycle`, and `refresh`
+  leave a slot there, and `claim`, `free`, and `status` call a slot claimable
+  only when it is clean and detached at a commit `origin/<default>` contains.
+  With no shared ref, recycling or refreshing one slot no longer re-creates
+  phantom dirt in its siblings. The worktree provider no longer uses
+  `worktree add --force` and needs `origin/<default>` in the source repo.
+  `recycle --json` reports `parked_at` in place of `branch`. After updating,
+  run `agentws refresh` once: it parks idle slots still on the default branch.
+  (#21)
+- `refresh` also moves a clean parked slot to the current `origin/<default>`,
+  and refuses a detached slot with commits `origin/<default>` lacks.
+  `auto_refresh` runs it on every unlocked work slot that is not claimable.
+
 ### Fixed
 
+- `doctor` passes a slot with a detached HEAD instead of reporting
+  `HEAD unresolvable`, and warns (`shared_branch`) when a slot's branch is
+  checked out in more than one worktree.
 - `agentws prune`: `--dry-run` says `would delete` instead of `deleted`; each
   repo is scanned once instead of once per slot; any branch checked out in any
   worktree is never a candidate. `--json` records gain `would_delete`. (#23)

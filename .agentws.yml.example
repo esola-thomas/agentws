@@ -25,7 +25,7 @@ version: 1                        # the parser refuses anything other than 1
 root: ~/work/myproj               # slots live directly under this directory
 top: myproj                       # project short name, used by slot_name_format
 provider: worktree                # -> providers/worktree.sh
-default_branch: main              # a slot is claimable only when on this branch
+default_branch: main              # idle slots are parked detached at origin/<this>
 
 # Ordered. claim walks ready environments first, preserving this order within
 # each environment state.
@@ -41,10 +41,10 @@ exclude_from_claim: ["0", "lab"]  # claim skips these; lock them explicitly
 # On platforms without /proc (macOS, Git Bash) TTL is the only expiry mechanism.
 ttl_hours: 12
 
-# Safely heal verified phantom dirt before claim skips an otherwise idle slot.
+# Run refresh's safe repair before claim skips an otherwise idle slot.
 auto_refresh: false
 
-# Doctor can release a locked slot that stays clean, on the default branch, and
+# Doctor can release a locked slot that stays clean, parked, and
 # at the same commit for this observation period. Disabled unless opted in.
 auto_release: false
 auto_release_minutes: 30

@@ -29,14 +29,14 @@ cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS
 #    If it is empty, follow the project's own setup doc. A slot whose first
 #    quality gate fails on missing tooling is a bootstrap you skipped.
 
-# 2. Branch immediately. Slots share the default-branch ref; a commit on the
-#    default branch inside a slot moves it for every other slot.
+# 2. Branch immediately. An idle slot is parked detached at origin/<default>;
+#    a commit made there belongs to no branch.
 git checkout -b <branch> origin/<base>
 
 # 3. Work. Commit. Push. Open the PR the way the project says to.
 
 # 4. After the PR merges (or when abandoning the task):
-agentws recycle "$AGENTWS_SLOT"              # fetch, reset to origin/<default>,
+agentws recycle "$AGENTWS_SLOT"              # fetch, park at origin/<default>,
                                              # delete the task branch, release
 ```
 
@@ -56,9 +56,9 @@ recycling; pass `--clean-untracked` only for files you created.
 
 ## Things that look like your problem and are not
 
-- `phantom-dirty` on idle slots after a merge is shared-ref drift, not
-  uncommitted work. `agentws refresh` heals it; it refuses anything that is
-  real dirt.
+- `phantom-dirty` on an idle slot left on the default branch is shared-ref
+  drift, not uncommitted work. `agentws refresh` heals it and parks the slot
+  detached; it refuses anything that is real dirt.
 - A slot showing `N files dirty` that you do not hold belongs to someone
   else's in-flight task. Leave it.
 - Lock liveness is tied to `AGENTWS_PID`. If you fork a subprocess to do the

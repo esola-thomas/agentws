@@ -5,10 +5,10 @@
 #   source_repo    parent clone the worktrees hang off. Defaults to the
 #                  reference slot's path, else {root}/<top>.
 #   branch_prefix  opt-in branch namespace, e.g. "agentws/". Unset by default:
-#                  a new slot is checked out on default_branch, because
-#                  slot_claimable (lib/slots.sh) only claims a slot that is on
-#                  it. Setting this puts each new slot on its own branch, which
-#                  leaves it unclaimable until it is returned to default_branch.
+#                  a new slot is parked detached at origin/<default_branch>, the
+#                  only state slot_claimable (lib/slots.sh) accepts. Setting this
+#                  puts each new slot on its own branch, which leaves it
+#                  unclaimable until it is recycled.
 
 provider_api_version() { printf '1'; }
 
@@ -38,30 +38,15 @@ provider_slot_create() { # <slot> <abs-path>
     die "refusing to create the reference slot $slot as a worktree of itself"
   fi
 
-  local has_local=0 has_remote=0
-  git -C "$src" rev-parse --verify --quiet "refs/heads/$AGENTWS_DEFAULT_BRANCH"          >/dev/null 2>&1 && has_local=1
-  git -C "$src" rev-parse --verify --quiet "refs/remotes/origin/$AGENTWS_DEFAULT_BRANCH" >/dev/null 2>&1 && has_remote=1
-  [ $has_local -eq 1 ] || [ $has_remote -eq 1 ] \
-    || die "default branch '$AGENTWS_DEFAULT_BRANCH' not found in $src"
-
-  # Prefer the remote-tracking tip so a slot starts from what the forge has;
-  # fall back to the local branch on a repo with no remote.
-  if [ $has_remote -eq 1 ]; then
-    start="origin/$AGENTWS_DEFAULT_BRANCH"
-  else
-    start="$AGENTWS_DEFAULT_BRANCH"
-  fi
+  start="origin/$AGENTWS_DEFAULT_BRANCH"
+  git -C "$src" rev-parse --verify --quiet "refs/remotes/$start" >/dev/null 2>&1 \
+    || die "$start not found in $src (fetch it first)"
 
   br="${AGENTWS_P_branch_prefix:-}"
   if [ -z "$br" ]; then
-    # Default: land the slot ON default_branch, the only state slot_claimable
-    # accepts. --force because git otherwise refuses a second checkout of a
-    # branch already out in the source repo or in a sibling idle slot.
-    if [ $has_local -eq 1 ]; then
-      run git -C "$src" worktree add --force "$d" "$AGENTWS_DEFAULT_BRANCH"
-    else
-      run git -C "$src" worktree add --force -b "$AGENTWS_DEFAULT_BRANCH" "$d" "$start"
-    fi
+    # Detached, not on default_branch: idle slots that share one branch ref all
+    # move whenever any of them moves it.
+    run git -C "$src" worktree add --detach "$d" "$start"
     return $?
   fi
 
