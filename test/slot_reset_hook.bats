@@ -282,6 +282,23 @@ reference_with_submodule_lag() {
   [ "$(git -C "$ROOT/1_proj/sub/nested" rev-parse HEAD)" = "$head" ]
 }
 
+@test "sync repairs published nested submodule lag" {
+  reference_with_submodule_lag
+  git -C "$ROOT/1_proj/sub" submodule add -q "$SUBREMOTE" nested
+  git -C "$ROOT/1_proj/sub" commit -q -am nested
+  git -C "$ROOT/1_proj/sub" push -q origin HEAD:refs/heads/nested
+  git -C "$ROOT/1_proj/sub" fetch -q origin
+  git -C "$ROOT/1_proj" add sub
+  git -C "$ROOT/1_proj" commit -q -m 'pin nested submodule'
+  git -C "$ROOT/1_proj" push -q origin HEAD:refs/heads/main
+  git -C "$ROOT/1_proj/sub/nested" checkout -q "$SUB_A"
+
+  run agentws sync 1
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$ROOT/1_proj/sub/nested" rev-parse HEAD)" = "$SUB_B" ]
+  [ -z "$(git -C "$ROOT/1_proj" status --porcelain)" ]
+}
+
 @test "sync refuses a staged gitlink change rather than treating it as lag" {
   reference_with_submodule_lag
   git -C "$ROOT/1_proj" add sub

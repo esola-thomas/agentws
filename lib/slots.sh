@@ -207,7 +207,6 @@ slot_submodule_only_dirt() { # slot_submodule_only_dirt <slot>
   [ -z "$(slot_submodule_untracked "$1")" ] || return 1
   git -C "$d" diff --quiet --ignore-submodules=all -- 2>/dev/null || return 1
   git -C "$d" diff --cached --quiet --ignore-submodules=none -- 2>/dev/null || return 1
-  slot_submodule_modified "$1" && return 1
   [ -z "$(slot_submodule_unsafe "$1")" ] || return 1
   slot_submodule_stale "$1"
 }
