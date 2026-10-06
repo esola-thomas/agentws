@@ -53,7 +53,19 @@ slot_resolve() { # slot_resolve <arg> -> slot id, rc 1 if no match
 # Each returns a value with a safe default, never an error, so a slot with a
 # broken checkout still produces a complete status row.
 
+# The checked-out branch, else detached@<short-sha>. Empty only when HEAD does
+# not resolve.
 slot_branch() { # slot_branch <slot>
+  local d br sha
+  d="$(provider_slot_path "$1")"
+  br="$(slot_current_branch "$1")"
+  if [ -n "$br" ]; then printf '%s' "$br"; return 0; fi
+  sha="$(git -C "$d" rev-parse --short HEAD 2>/dev/null || true)"
+  [ -z "$sha" ] || printf 'detached@%s' "$sha"
+}
+
+# The checked-out branch only; empty on a detached HEAD.
+slot_current_branch() { # slot_current_branch <slot>
   git -C "$(provider_slot_path "$1")" branch --show-current 2>/dev/null || true
 }
 
@@ -96,7 +108,7 @@ slot_untracked() { # slot_untracked <slot> -> paths, one per line
 slot_phantom_base() { # slot_phantom_base <slot>
   local s="$1" d target head index_tree commit commit_tree
   provider_slot_exists "$s" || return 1
-  [ "$(slot_branch "$s")" = "$AGENTWS_DEFAULT_BRANCH" ] || return 1
+  [ "$(slot_current_branch "$s")" = "$AGENTWS_DEFAULT_BRANCH" ] || return 1
   [ "$(slot_dirty_count "$s")" != "0" ] || return 1
   d="$(provider_slot_path "$s")"
 
@@ -209,8 +221,22 @@ slot_env_setup_epoch() {
   [ -f "$f" ] && sed -n '1p' "$f" || true
 }
 
+# A branch's configured upstream. A detached HEAD tracks origin/<default>,
+# which is what parked slots are measured against.
 slot_upstream() { # slot_upstream <slot>
-  git -C "$(provider_slot_path "$1")" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true
+  local d
+  d="$(provider_slot_path "$1")"
+  if [ -n "$(slot_current_branch "$1")" ]; then
+    git -C "$d" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true
+  elif git -C "$d" rev-parse --verify --quiet "origin/$AGENTWS_DEFAULT_BRANCH" >/dev/null 2>&1; then
+    printf 'origin/%s' "$AGENTWS_DEFAULT_BRANCH"
+  fi
+}
+
+# PREDICATE: the reference slot is where sync keeps it: parked, or still on
+# the default branch it will be parked from.
+slot_reference_on_default() { # slot_reference_on_default <slot>
+  [ "$(slot_current_branch "$1")" = "$AGENTWS_DEFAULT_BRANCH" ] || slot_parked "$1"
 }
 
 slot_ahead_behind() { # slot_ahead_behind <slot> -> "<ahead> <behind>"
@@ -291,7 +317,7 @@ json_slot_obj() { # json_slot_obj <slot>
 
   warns=""
   if [ "$role" = "reference" ]; then
-    [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ] && warns="$(jjoin "$warns" '"reference_off_default"')"
+    slot_reference_on_default "$s" || warns="$(jjoin "$warns" '"reference_off_default"')"
     [ "$dirty" != "0" ]                    && warns="$(jjoin "$warns" '"reference_dirty"')"
   fi
   [ -z "$up" ] && warns="$(jjoin "$warns" '"no_upstream"')"

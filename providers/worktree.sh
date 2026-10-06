@@ -89,18 +89,6 @@ provider_slot_doctor() { # <slot> <abs-path>
     printf 'FAIL common-dir unresolvable from %s\n' "$d"
     bad=1
   fi
-
-  if git -C "$d" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
-    printf 'OK upstream %s\n' "$(git -C "$d" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
-  else
-    printf 'WARN upstream no upstream branch configured\n'
-  fi
-
-  if [ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]; then
-    printf 'WARN worktree uncommitted changes present\n'
-  else
-    printf 'OK worktree clean\n'
-  fi
-
+  # branch, upstream, and worktree are core doctor checks.
   return $bad
 }

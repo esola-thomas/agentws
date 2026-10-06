@@ -14,7 +14,8 @@
 #   agentws lock <slot> "reason"   lock a specific slot
 #   agentws unlock <slot>          release your own lock
 #   agentws locks                  show all locks and their age
-#   agentws sync [slot...]         fetch + prune; fast-forward the reference slot
+#   agentws sync [slot...]         fetch + prune; park the reference slot at origin/<default>.
+#                                  Never moves a work slot (refresh advances idle ones)
 #   agentws prune [slot...]        delete merged local branches, after listing them
 #   agentws refresh [slot...]      park idle slots at origin/<default>, healing phantom dirt
 #   agentws recycle <slot>         return a finished slot to service and release it

@@ -51,8 +51,9 @@ recycling; pass `--clean-untracked` only for files you created.
   The MCP server has no force parameter by design.
 - Never `git worktree remove`, `rm -rf`, or `git reset --hard` a slot. Slots
   are permanent; `recycle` is the only reset you run, and only on your own.
-- Never `git checkout <default-branch>` inside a slot to "clean up". It is
-  refused (the branch is held by the reference slot). `recycle` handles it.
+- Never `git checkout <default-branch>` inside a slot to "clean up". It puts
+  the slot on a ref other worktrees share, and git refuses it when another
+  worktree has the branch. `recycle` handles it.
 
 ## Things that look like your problem and are not
 

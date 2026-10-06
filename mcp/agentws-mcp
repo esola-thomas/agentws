@@ -246,7 +246,7 @@ tools_json() {
    "required":["session","slot"]}},
 
  {"name":"workspace_sync",
-  "description":"Fetch and prune in one slot, or all slots when slot is omitted. Fast-forwards only the read-only reference slot; never merges into a work slot.",
+  "description":"Fetch and prune in one slot, or all slots when slot is omitted. Parks only the read-only reference slot detached at the remote default branch; never moves a work slot. Fails when a fetch fails or the reference is dirty.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session."},
     "slot":{"type":"string","description":"Optional slot id or workspace name. All slots if omitted."}},

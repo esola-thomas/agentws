@@ -47,7 +47,7 @@ cmd_status() {
 
     if slot_is_reference "$s"; then
       note="reference (read-only)"
-      [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ] && note="$(c_red 'OFF DEFAULT BRANCH')"
+      slot_reference_on_default "$s" || note="$(c_red 'OFF DEFAULT BRANCH')"
       [ "$dirty" != "0" ]                    && note="$(c_red 'REFERENCE IS DIRTY')"
     fi
     [ "$behind" != "0" ] && note="${note:+$note, }${behind} behind"
@@ -272,7 +272,7 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
     REFRESH_DETAIL="locked by $(lock_read "$s" owner)"
     return 4
   fi
-  br="$(slot_branch "$s")"
+  br="$(slot_current_branch "$s")"
   if [ -n "$br" ] && [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ]; then
     REFRESH_DETAIL="on branch $br, not idle"
     return 8
@@ -374,7 +374,7 @@ cmd_recycle() {
     printf '%s is held by %s, not you (%s)\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" >&2
     return 4
   fi
-  current="$(slot_branch "$s")"
+  current="$(slot_current_branch "$s")"
   delete_branch="${CLAIM_BRANCH:-$current}"
   target="origin/$AGENTWS_DEFAULT_BRANCH"
 
@@ -483,17 +483,20 @@ EOF
 cmd_done() { cmd_recycle "$@"; }
 
 # --------------------------------------------------------------------- sync
-# Fetch and prune remote-tracking refs in every slot, then fast-forward the
-# reference slot when it is clean and on the default branch. Work slots are
-# never merged into: they may carry a feature branch mid-task.
+# Fetch and prune remote-tracking refs in every slot, then park the reference
+# slot detached at origin/<default> when it is clean. Detached, so it never
+# needs the default branch that another worktree may have checked out. Work
+# slots are never moved: they may carry a feature branch mid-task. Exits EGIT
+# when any fetch failed or the reference could not be parked.
 cmd_sync() {
-  local targets s d br dirty results=() rc st detail
+  local targets s d dirty results=() st detail target failed=""
 
   if [ $# -gt 0 ]; then
     targets="$(_cmd_resolve_targets "$@")" || return 6
   else
     targets="$(slot_list_existing)"
   fi
+  target="origin/$AGENTWS_DEFAULT_BRANCH"
 
   for s in $targets; do
     d="$(provider_slot_path "$s")"
@@ -509,41 +512,51 @@ cmd_sync() {
     fi
 
     st="ok"; detail="fetched and pruned"
-    if ! run git -C "$d" fetch --all --prune --quiet; then
+    if ! run git -C "$d" fetch --all --prune --quiet >&2; then
       st="fail"; detail="git fetch failed"
       sayf '  %s git fetch failed\n' "$(c_red FAIL)"
-      results+=("$(_sync_rec "$s" "$st" "$detail")")
-      continue
+    else
+      sayf '  fetched + pruned remote-tracking refs\n'
     fi
-    sayf '  fetched + pruned remote-tracking refs\n'
 
-    if slot_is_reference "$s"; then
-      br="$(slot_branch "$s")"
+    if [ "$st" = "ok" ] && slot_is_reference "$s"; then
       dirty="$(slot_dirty_count "$s")"
-      if [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ]; then
-        detail="reference on $br, not $AGENTWS_DEFAULT_BRANCH; not touched"
-        sayf '  %s reference is on %s, not %s. Not touching it.\n' \
-          "$(c_red SKIP)" "$br" "$AGENTWS_DEFAULT_BRANCH"
-      elif [ "$dirty" != "0" ]; then
-        detail="reference has $dirty uncommitted file(s); not touched"
-        sayf '  %s reference has %s uncommitted file(s). Not touching it.\n' "$(c_red SKIP)" "$dirty"
+      st="fail"; SLOT_RESET_DETAIL=""
+      # Phantom dirt is the shared default-branch ref moving under the
+      # reference, not anyone's work: detach, then reset only this HEAD.
+      if [ "$dirty" != "0" ] && slot_phantom_base "$s" >/dev/null && \
+         run git -C "$d" checkout --quiet --detach >&2 && \
+         run git -C "$d" reset --hard --quiet "$target" >&2; then
+        dirty=0
+        sayf '  reset phantom dirt\n'
+      fi
+      if [ "$dirty" != "0" ]; then
+        detail="reference has $dirty uncommitted file(s); not parked at $target"
+        sayf '  %s reference has %s uncommitted file(s). Not touching it:\n' "$(c_red FAIL)" "$dirty"
         git -C "$d" status --short 2>/dev/null | sed 's/^/    /' >&2
+      elif [ -z "$(slot_current_branch "$s")" ] && \
+           ! git -C "$d" merge-base --is-ancestor HEAD "$target" 2>/dev/null; then
+        detail="reference HEAD $(slot_branch "$s") has commits not in $target; not touched"
+        sayf '  %s reference HEAD has commits not in %s. Not touching it.\n' "$(c_red FAIL)" "$target"
+      elif run git -C "$d" checkout --quiet --detach "$target" >&2 && \
+           _slot_reset_hook "$s" "$d" "$target"; then
+        st="ok"; detail="parked at $target"
+        sayf '  parked at %s\n' "$target"
       else
-        # --ff-only: never creates a merge commit, never rewrites history.
-        if run git -C "$d" merge --ff-only "origin/${AGENTWS_DEFAULT_BRANCH}" --quiet; then
-          detail="fast-forwarded to origin/$AGENTWS_DEFAULT_BRANCH"
-          sayf '  fast-forwarded to origin/%s\n' "$AGENTWS_DEFAULT_BRANCH"
-        else
-          st="fail"; detail="fast-forward to origin/$AGENTWS_DEFAULT_BRANCH failed"
-          sayf '  %s could not fast-forward\n' "$(c_yel WARN)"
-        fi
+        detail="could not park the reference at $target${SLOT_RESET_DETAIL:+: $SLOT_RESET_DETAIL}"
+        sayf '  %s could not park the reference at %s\n' "$(c_red FAIL)" "$target"
       fi
     fi
+    [ "$st" = "fail" ] && failed="${failed:+$failed, }$(slot_name "$s") ($detail)"
     results+=("$(_sync_rec "$s" "$st" "$detail")")
   done
 
-  if [ "${JSON:-0}" -eq 1 ]; then
+  if [ "${JSON:-0}" -eq 1 ] && [ -z "$failed" ]; then
     printf '{"synced":[%s]}' "$(jjoin "${results[@]+"${results[@]}"}")"
+  fi
+  if [ -n "$failed" ]; then
+    printf 'sync failed: %s\n' "$failed" >&2
+    return 8
   fi
   return 0
 }
@@ -865,13 +878,13 @@ cmd_doctor() {
       ok=0
     fi
 
-    if [ -n "$(slot_branch "$s")" ]; then
-      recs="$(jjoin "$recs" "$(_doctor_rec branch pass "$(slot_branch "$s")")")"
-    elif git -C "$d" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-      recs="$(jjoin "$recs" "$(_doctor_rec branch pass "detached at $(git -C "$d" rev-parse --short HEAD)")")"
-    else
+    if [ -z "$(slot_branch "$s")" ]; then
       recs="$(jjoin "$recs" "$(_doctor_rec branch fail 'HEAD unresolvable')")"
       ok=0
+    elif slot_is_reference "$s" && ! slot_reference_on_default "$s"; then
+      recs="$(jjoin "$recs" "$(_doctor_rec branch warn "reference is on $(slot_branch "$s"), not parked at origin/$AGENTWS_DEFAULT_BRANCH; agentws sync parks it when clean")")"
+    else
+      recs="$(jjoin "$recs" "$(_doctor_rec branch pass "$(slot_branch "$s")")")"
     fi
 
     elsewhere="$(slot_branch_elsewhere "$s" | tr '\n' ' ')"

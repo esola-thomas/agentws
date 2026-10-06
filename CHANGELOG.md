@@ -21,12 +21,26 @@ All notable changes to this project are recorded here. Format follows
 - `refresh` also moves a clean parked slot to the current `origin/<default>`,
   and refuses a detached slot with commits `origin/<default>` lacks.
   `auto_refresh` runs it on every unlocked work slot that is not claimable.
+- `sync` parks the reference slot detached at `origin/<default>` instead of
+  fast-forwarding the default branch, so it never needs a branch another
+  worktree has checked out, and heals its phantom dirt first. It exits `EGIT`
+  (8) when a fetch fails, the reference is dirty (the dirty paths are
+  printed), or the reference could not be parked. It never moves a work slot.
+  (#22)
+- `status`, `free`, and the slot JSON show a detached HEAD as
+  `detached@<short-sha>` instead of `?` or an empty string. A detached slot is
+  measured against `origin/<default>` as its upstream, so parked slots no
+  longer warn `no_upstream`.
 
 ### Fixed
 
 - `doctor` passes a slot with a detached HEAD instead of reporting
   `HEAD unresolvable`, and warns (`shared_branch`) when a slot's branch is
   checked out in more than one worktree.
+- `doctor` printed `upstream` and `worktree` twice, once from the core and
+  once from the provider. The bundled providers now report only their own
+  checks. A reference slot that is neither parked nor on the default branch
+  is a `branch` WARN. (#22)
 - `agentws prune`: `--dry-run` says `would delete` instead of `deleted`; each
   repo is scanned once instead of once per slot; any branch checked out in any
   worktree is never a candidate. `--json` records gain `would_delete`. (#23)
