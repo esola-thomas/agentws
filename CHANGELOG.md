@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-06
+
 ### Added
 
 - `agentws reap [--dry-run] [--yes] [--json]` and the `workspace_reap` MCP tool
