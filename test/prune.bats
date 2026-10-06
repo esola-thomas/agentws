@@ -20,8 +20,8 @@ setup() {
   git -C "$SRC" add file
   git -C "$SRC" commit -q -m old
   git -C "$SRC" push -q -u origin main
-  git -C "$SRC" worktree add -q --force "$ROOT/1_proj" main
-  git -C "$SRC" worktree add -q --force "$ROOT/2_proj" main
+  git -C "$SRC" worktree add -q --detach "$ROOT/1_proj" origin/main
+  git -C "$SRC" worktree add -q --detach "$ROOT/2_proj" origin/main
 
   {
     printf 'version: 1\n'
