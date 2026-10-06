@@ -175,6 +175,163 @@ slot_claimable_json() {
   [ "$(slot_claimable_json)" = "true" ]
 }
 
+reference_with_submodule_lag() {
+  printf 'reference_slot: "1"\n' >> "$CONFIG"
+  git -C "$ROOT/1_proj/sub" checkout -q "$SUB_B"
+}
+
+@test "sync repairs reference submodule lag without moving four work slots" {
+  reference_with_submodule_lag
+  local s
+  for s in 2 3 4 5; do
+    git -C "$SRC" worktree add -q --detach "$ROOT/${s}_proj" origin/main
+    git -C "$ROOT/${s}_proj" submodule update --init -q
+    git -C "$ROOT/${s}_proj/sub" checkout -q "$SUB_B"
+  done
+  sed -i.bak 's/^slots: \[1\]$/slots: [1,2,3,4,5]/' "$CONFIG" && rm -f "$CONFIG.bak"
+
+  run agentws sync --json
+  [ "$status" -eq 0 ]
+  local json="${lines[${#lines[@]}-1]}"
+  [ "$(printf '%s' "$json" | jq -r '.data.synced | length')" = "5" ]
+  ! git -C "$ROOT/1_proj" symbolic-ref -q HEAD
+  [ "$(git -C "$ROOT/1_proj" rev-parse HEAD)" = "$(git -C "$ROOT/1_proj" rev-parse origin/main)" ]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_A" ]
+  [ -z "$(git -C "$ROOT/1_proj" status --porcelain)" ]
+  for s in 2 3 4 5; do
+    [ "$(git -C "$ROOT/${s}_proj/sub" rev-parse HEAD)" = "$SUB_B" ]
+  done
+}
+
+@test "sync parks a reference on the default branch and repairs submodule lag" {
+  reference_with_submodule_lag
+  git -C "$ROOT/1_proj" checkout -q --ignore-other-worktrees main
+
+  run agentws sync 1
+  [ "$status" -eq 0 ]
+  ! git -C "$ROOT/1_proj" symbolic-ref -q HEAD
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_A" ]
+  [ -z "$(git -C "$ROOT/1_proj" status --porcelain)" ]
+  [ "$(git -C "$SRC" branch --show-current)" = main ]
+}
+
+@test "sync refuses and names tracked and untracked content inside a submodule" {
+  reference_with_submodule_lag
+  local dirt
+  for dirt in tracked staged untracked; do
+    if [ "$dirt" = untracked ]; then
+      printf 'scratch\n' > "$ROOT/1_proj/sub/SCRATCH"
+    else
+      printf 'mine\n' >> "$ROOT/1_proj/sub/f"
+      if [ "$dirt" = staged ]; then git -C "$ROOT/1_proj/sub" add f; fi
+    fi
+
+    run agentws sync --json 1
+    [ "$status" -eq 8 ]
+    local json="${lines[${#lines[@]}-1]}"
+    [[ "$(printf '%s' "$json" | jq -r '.error.message')" == *"submodule sub: uncommitted content"* ]]
+    [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_B" ]
+    if [ "$dirt" = untracked ]; then
+      [ -f "$ROOT/1_proj/sub/SCRATCH" ]
+    else
+      grep -q mine "$ROOT/1_proj/sub/f"
+      git -C "$ROOT/1_proj/sub" restore --staged --worktree f
+    fi
+  done
+}
+
+@test "sync refuses and names a submodule with unpublished detached commits" {
+  reference_with_submodule_lag
+  printf 'mine\n' >> "$ROOT/1_proj/sub/f"
+  git -C "$ROOT/1_proj/sub" commit -q -am mine
+  local head
+  head="$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)"
+
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"submodule sub: HEAD has commits not on any remote branch"* ]]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$head" ]
+}
+
+@test "refresh also refuses submodule lag containing unpublished commits" {
+  git -C "$ROOT/1_proj/sub" checkout -q "$SUB_B"
+  printf 'mine\n' >> "$ROOT/1_proj/sub/f"
+  git -C "$ROOT/1_proj/sub" commit -q -am mine
+  local head
+  head="$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)"
+
+  run agentws refresh 1
+  [ "$status" -eq 8 ]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$head" ]
+}
+
+@test "sync refuses unpublished commits inside nested submodules" {
+  reference_with_submodule_lag
+  git -C "$ROOT/1_proj/sub" submodule add -q "$SUBREMOTE" nested
+  git -C "$ROOT/1_proj/sub" commit -q -am nested
+  git -C "$ROOT/1_proj/sub" push -q origin HEAD:refs/heads/nested
+  git -C "$ROOT/1_proj/sub" fetch -q origin
+  printf 'mine\n' >> "$ROOT/1_proj/sub/nested/f"
+  git -C "$ROOT/1_proj/sub/nested" commit -q -am mine
+  local head
+  head="$(git -C "$ROOT/1_proj/sub/nested" rev-parse HEAD)"
+
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"submodule sub/nested: HEAD has commits not on any remote branch"* ]]
+  [ "$(git -C "$ROOT/1_proj/sub/nested" rev-parse HEAD)" = "$head" ]
+}
+
+@test "sync refuses a staged gitlink change rather than treating it as lag" {
+  reference_with_submodule_lag
+  git -C "$ROOT/1_proj" add sub
+  local index
+  index="$(git -C "$ROOT/1_proj" write-tree)"
+
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [ "$(git -C "$ROOT/1_proj" write-tree)" = "$index" ]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_B" ]
+}
+
+@test "sync refuses detached reference commits even when submodules lag" {
+  reference_with_submodule_lag
+  printf 'mine\n' >> "$ROOT/1_proj/file"
+  git -C "$ROOT/1_proj" commit -q -am mine
+  local head
+  head="$(git -C "$ROOT/1_proj" rev-parse HEAD)"
+
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"reference HEAD has commits not in origin/main"* ]]
+  [ "$(git -C "$ROOT/1_proj" rev-parse HEAD)" = "$head" ]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_B" ]
+}
+
+@test "sync dry-run leaves reference submodule lag untouched" {
+  reference_with_submodule_lag
+
+  run agentws --dry-run sync 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"*"submodule update --init --recursive --checkout"* ]]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_B" ]
+}
+
+@test "sync fails when the reset hook fails or leaves reference submodules stale" {
+  reference_with_submodule_lag
+  install_reset_provider 'return 3'
+
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"could not sync the slot to origin/main (rc 3)"* ]]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_B" ]
+
+  install_reset_provider ':'
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"submodules still do not match origin/main"* ]]
+}
+
 @test "--dry-run reports the submodule sync without performing it" {
   on_branch_with_bumped_submodule
 

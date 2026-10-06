@@ -571,12 +571,12 @@ _reap_rec() { # _reap_rec <slot> <branch> <reason> <status> <detail>
 
 # --------------------------------------------------------------------- sync
 # Fetch and prune remote-tracking refs in every slot, then park the reference
-# slot detached at origin/<default> when it is clean. Detached, so it never
-# needs the default branch that another worktree may have checked out. Work
+# slot detached at origin/<default> when it is clean or only has submodule lag.
+# Detached, so it never needs the default branch another worktree has checked out. Work
 # slots are never moved: they may carry a feature branch mid-task. Exits EGIT
 # when any fetch failed or the reference could not be parked.
 cmd_sync() {
-  local targets s d dirty results=() st detail target failed=""
+  local targets s d dirty unsafe results=() st detail target failed=""
 
   if [ $# -gt 0 ]; then
     targets="$(_cmd_resolve_targets "$@")" || return 6
@@ -608,16 +608,20 @@ cmd_sync() {
 
     if [ "$st" = "ok" ] && slot_is_reference "$s"; then
       dirty="$(slot_dirty_count "$s")"
+      unsafe="$(slot_submodule_unsafe "$s")"
       st="fail"; SLOT_RESET_DETAIL=""
       # Phantom dirt is the shared default-branch ref moving under the
       # reference, not anyone's work: detach, then reset only this HEAD.
-      if [ "$dirty" != "0" ] && slot_phantom_base "$s" >/dev/null && \
+      if [ -z "$unsafe" ] && [ "$dirty" != "0" ] && slot_phantom_base "$s" >/dev/null && \
          run git -C "$d" checkout --quiet --detach >&2 && \
          run git -C "$d" reset --hard --quiet "$target" >&2; then
         dirty=0
         sayf '  reset phantom dirt\n'
       fi
-      if [ "$dirty" != "0" ]; then
+      if [ -n "$unsafe" ]; then
+        detail="reference has unsafe submodules; not parked at $target: $unsafe"
+        sayf '  %s reference has submodule work. Not touching it:\n%s\n' "$(c_red FAIL)" "$unsafe"
+      elif [ "$dirty" != "0" ] && ! slot_submodule_only_dirt "$s"; then
         detail="reference has $dirty uncommitted file(s); not parked at $target"
         sayf '  %s reference has %s uncommitted file(s). Not touching it:\n' "$(c_red FAIL)" "$dirty"
         git -C "$d" status --short 2>/dev/null | sed 's/^/    /' >&2

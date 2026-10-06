@@ -176,6 +176,24 @@ slot_submodule_untracked() { # slot_submodule_untracked <slot> -> paths, one per
     'git ls-files --others --exclude-standard | sed "s|^|$displaypath/|"' 2>/dev/null || true
 }
 
+# Name populated submodules whose content or unpublished HEAD must be kept.
+slot_submodule_unsafe() { # slot_submodule_unsafe <slot> -> refusals, one per line
+  local d
+  d="$(provider_slot_path "$1")"
+  [ -f "$d/.gitmodules" ] || return 0
+  # shellcheck disable=SC2016  # $displaypath is foreach's, expanded by its shell
+  git -C "$d" submodule --quiet foreach --recursive '
+    if ! dirt=$(git status --porcelain --untracked-files=all --ignore-submodules=all) ||
+       [ -n "$dirt" ] ||
+       ! git diff --cached --quiet --ignore-submodules=none --; then
+      printf "submodule %s: uncommitted content\n" "$displaypath"
+    fi
+    if ! remotes=$(git branch -r --contains HEAD) || [ -z "$remotes" ]; then
+      printf "submodule %s: HEAD has commits not on any remote branch\n" "$displaypath"
+    fi
+  ' 2>/dev/null || printf 'submodule inspection failed\n'
+}
+
 # PREDICATE: every difference in this slot is a submodule checkout lagging its
 # gitlink. Nothing untracked, no tracked change outside a gitlink, no edit
 # inside a submodule: drift the recorded gitlinks repair, not work anyone did.
@@ -188,8 +206,9 @@ slot_submodule_only_dirt() { # slot_submodule_only_dirt <slot>
   [ -z "$(slot_untracked "$1")" ] || return 1
   [ -z "$(slot_submodule_untracked "$1")" ] || return 1
   git -C "$d" diff --quiet --ignore-submodules=all -- 2>/dev/null || return 1
-  git -C "$d" diff --cached --quiet --ignore-submodules=all -- 2>/dev/null || return 1
+  git -C "$d" diff --cached --quiet --ignore-submodules=none -- 2>/dev/null || return 1
   slot_submodule_modified "$1" && return 1
+  [ -z "$(slot_submodule_unsafe "$1")" ] || return 1
   slot_submodule_stale "$1"
 }
 
