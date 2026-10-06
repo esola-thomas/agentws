@@ -59,7 +59,6 @@ finish_merged() { # finish_merged <slot> <branch>
   printf '%s\n' "$2" > "$d/$1.task"
   git -C "$d" add "$1.task"
   git -C "$d" -c user.email=t@example.invalid -c user.name=tester commit -q -m "$2"
-  git -C "$SRC" fetch -q "$d" "$2:$2"
   git -C "$SRC" merge -q --no-ff "$2" -m "merge $2"
   git -C "$SRC" push -q
   git -C "$d" fetch -q origin
