@@ -545,10 +545,12 @@ _sync_rec() { # _sync_rec <slot> <status> <detail>
 #
 # Divergence from wsctl:604-616, which deleted upstream-gone branches with
 # `branch -D` whether or not they were merged. Here an unmerged branch is
-# never deleted, only reported. Also never touched: the checked-out branch,
-# the default branch, and any slot locked by someone else.
+# never deleted, only reported. Also never touched: any branch checked out in
+# any worktree, the default branch, and any slot locked by someone else.
+# Slots of one repo share refs/heads, so each repo is scanned once.
 cmd_prune() {
-  local targets s d cur gone merged b victims=() kept=() recs=()
+  local targets s d common seen="" gone merged b protected verb
+  local victims=() kept=() recs=() deleted=() would=()
 
   if [ $# -gt 0 ]; then
     targets="$(_cmd_resolve_targets "$@")" || return 6
@@ -561,24 +563,37 @@ cmd_prune() {
     # The reference slot carries no local work branches by policy.
     slot_is_reference "$s" && continue
     d="$(provider_slot_path "$s")"
+    common="$(cd "$d" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || common="$d"
     sayf '\n=== %s ===\n' "$(slot_name "$s")"
     if ! lock_guard "$s" "prune" >&2; then
-      recs+=("$(_prune_rec "$s" "" "")")
+      recs+=("$(_prune_rec "$s" "" "" "")")
       continue
     fi
-    run git -C "$d" fetch --prune --quiet || true
+    case "
+$seen
+" in *"
+$common
+"*) sayf '  same repo as an earlier slot, already handled\n'; continue ;; esac
+    seen="${seen:+$seen
+}$common"
+    run git -C "$d" fetch --prune --quiet >&2 || true
 
     gone="$(git -C "$d" for-each-ref --format '%(refname:short) %(upstream:track)' refs/heads 2>/dev/null \
             | awk '$2=="[gone]" {print $1}')"
     merged="$(git -C "$d" branch --merged "origin/${AGENTWS_DEFAULT_BRANCH}" --format '%(refname:short)' 2>/dev/null \
             | grep -vxF "$AGENTWS_DEFAULT_BRANCH" || true)"
+    protected="$(git -C "$d" worktree list --porcelain 2>/dev/null \
+            | sed -n 's|^branch refs/heads/||p')"
 
-    cur="$(slot_branch "$s")"
     victims=(); kept=()
     for b in $gone $merged; do
       [ -n "$b" ] || continue
-      [ "$b" = "$cur" ] && continue
       [ "$b" = "$AGENTWS_DEFAULT_BRANCH" ] && continue
+      case "
+$protected
+" in *"
+$b
+"*) continue ;; esac
       case " ${victims[*]+${victims[*]}} " in *" $b "*) continue ;; esac
       case " ${kept[*]+${kept[*]}} " in *" $b "*) continue ;; esac
       # Unmerged branches hold work that exists nowhere else. Report, never delete.
@@ -596,7 +611,7 @@ cmd_prune() {
 
     if [ ${#victims[@]} -eq 0 ]; then
       sayf '  nothing to prune\n'
-      recs+=("$(_prune_rec "$s" "" "$(_jstr_list "${kept[@]+"${kept[@]}"}")")")
+      recs+=("$(_prune_rec "$s" "" "" "$(_jstr_list "${kept[@]+"${kept[@]}"}")")")
       continue
     fi
 
@@ -606,26 +621,27 @@ cmd_prune() {
 
     if [ "${JSON:-0}" -eq 1 ] && [ "${ASSUME_YES:-0}" -ne 1 ] && [ "${DRY:-0}" -ne 1 ]; then
       sayf '  %s refusing to delete without --yes under --json\n' "$(c_yel SKIP)"
-      recs+=("$(_prune_rec "$s" "" "$(_jstr_list "${victims[@]+"${victims[@]}"}" "${kept[@]+"${kept[@]}"}")")")
+      recs+=("$(_prune_rec "$s" "" "" "$(_jstr_list "${victims[@]+"${victims[@]}"}" "${kept[@]+"${kept[@]}"}")")")
       continue
     fi
 
     if confirm "  delete ${#victims[@]} local branch(es) in $(slot_name "$s")?"; then
-      local deleted=()
+      deleted=(); would=()
+      verb="deleted"; [ "${DRY:-0}" -eq 1 ] && verb="would delete"
       for b in "${victims[@]+"${victims[@]}"}"; do
         # -d, not -D: git refuses if the branch turns out to be unmerged.
         if run git -C "$d" branch -d "$b" >/dev/null 2>&1; then
-          sayf '    deleted %s\n' "$b"
-          deleted+=("$b")
+          sayf '    %s %s\n' "$verb" "$b"
+          if [ "${DRY:-0}" -eq 1 ]; then would+=("$b"); else deleted+=("$b"); fi
         else
           sayf '    %s git refused to delete %s\n' "$(c_yel WARN)" "$b"
           kept+=("$b")
         fi
       done
-      recs+=("$(_prune_rec "$s" "$(_jstr_list "${deleted[@]+"${deleted[@]}"}")" "$(_jstr_list "${kept[@]+"${kept[@]}"}")")")
+      recs+=("$(_prune_rec "$s" "$(_jstr_list "${deleted[@]+"${deleted[@]}"}")" "$(_jstr_list "${would[@]+"${would[@]}"}")" "$(_jstr_list "${kept[@]+"${kept[@]}"}")")")
     else
       sayf '  skipped\n'
-      recs+=("$(_prune_rec "$s" "" "$(_jstr_list "${victims[@]+"${victims[@]}"}" "${kept[@]+"${kept[@]}"}")")")
+      recs+=("$(_prune_rec "$s" "" "" "$(_jstr_list "${victims[@]+"${victims[@]}"}" "${kept[@]+"${kept[@]}"}")")")
     fi
   done
 
@@ -644,9 +660,9 @@ _jstr_list() { # _jstr_list [items...] -> comma-joined JSON strings
   printf '%s' "$out"
 }
 
-_prune_rec() { # _prune_rec <slot> <deleted-json-list> <kept-json-list>
-  printf '{"slot":%s,"name":%s,"deleted":[%s],"kept":[%s]}' \
-    "$(jstr "$1")" "$(jstr "$(slot_name "$1")")" "${2-}" "${3-}"
+_prune_rec() { # _prune_rec <slot> <deleted-json-list> <would-delete-json-list> <kept-json-list>
+  printf '{"slot":%s,"name":%s,"deleted":[%s],"would_delete":[%s],"kept":[%s]}' \
+    "$(jstr "$1")" "$(jstr "$(slot_name "$1")")" "${2-}" "${3-}" "${4-}"
 }
 
 # ------------------------------------------------------------------- create
