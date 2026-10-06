@@ -288,6 +288,13 @@ tools_json() {
     "clean_untracked":{"type":"boolean","description":"Remove untracked files after reporting their names."}},
    "required":["session","slot"]}},
 
+ {"name":"workspace_reap",
+  "description":"Recycle every finished slot at once: a stale or absent lock, a branch merged into or deleted from the remote default branch, and no uncommitted work. Never touches an active lock or a slot with real changes. Without confirm it only previews.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string"},
+    "confirm":{"type":"boolean","description":"Recycle the listed slots. False only previews them."}},
+   "required":["session"]}},
+
  {"name":"workspace_done",
   "description":"Mark a merged task done by recycling its slot and releasing this session's lock.",
   "inputSchema":{"type":"object","properties":{
@@ -441,6 +448,11 @@ tool_call() { # tool_call <name> <arguments-json>
       call_args=(create --json)
       [ "$with_env" = "true" ] && call_args+=(--with-env)
       call_args+=("$slot")
+      ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
+
+    workspace_reap)
+      call_args=(reap --json)
+      if [ "$confirm" = "true" ]; then call_args+=(--yes); else call_args+=(--dry-run); fi
       ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
 
     workspace_recycle|workspace_done)

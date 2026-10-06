@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- `agentws reap [--dry-run] [--yes] [--json]` and the `workspace_reap` MCP tool
+  recycle every slot whose branch is gone upstream or merged into
+  `origin/<default>`, has a stale or no lock, and is clean or only lagging in
+  submodules. Active locks, the reference and excluded slots, and slots with
+  real uncommitted changes are never touched; the last are listed. `status`
+  notes such a slot with `merged/gone: run agentws recycle N`, and `claim` and
+  `free` name the reapable slots when none is claimable. (#24)
+
 ### Changed
 
 - Idle slots are parked detached at `origin/<default>` instead of sharing the

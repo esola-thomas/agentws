@@ -65,6 +65,7 @@ cwd with the same env and flags; the work on disk is always intact.
 ```bash
 agentws recycle "$AGENTWS_SLOT"     # fetch, park at origin/<default>, drop branch, unlock
 agentws refresh                     # park idle slots at the new origin/<default>
+agentws reap                        # recycle every finished slot with a stale or no lock
 ```
 
 Submodule pointer merges are handled: `recycle` and `refresh` resync submodules

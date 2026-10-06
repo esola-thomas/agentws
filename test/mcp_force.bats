@@ -49,7 +49,7 @@ EOF
 @test "the lifecycle tool schemas are exactly the documented set" {
   local names
   names="$(sed -n 's/.*"name":"\(workspace_[a-z_]*\)".*/\1/p' "$MCP" | sort -u | tr '\n' ' ')"
-  [ "$names" = "workspace_claim workspace_create workspace_doctor workspace_done workspace_lock workspace_prune workspace_recycle workspace_refresh workspace_release workspace_status workspace_sync " ]
+  [ "$names" = "workspace_claim workspace_create workspace_doctor workspace_done workspace_lock workspace_prune workspace_reap workspace_recycle workspace_refresh workspace_release workspace_status workspace_sync " ]
 }
 
 @test "workspace_lock tells the model a busy result is final" {
@@ -128,12 +128,12 @@ busy_envelope() {
   [ ! -s "$STUB_DIR/calls" ]
 }
 
-@test "tools/list advertises eleven tools and no force parameter anywhere" {
+@test "tools/list advertises twelve tools and no force parameter anywhere" {
   write_stub 0 '{"ok":true,"command":"status","data":{},"error":null}'
   local out body
   out="$(mcp_send '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')"
   body="$(printf '%s' "$out" | sed -e 's/^Content-Length:[^{]*//')"
-  [ "$(printf '%s' "$body" | jq -r '.result.tools | length')" = "11" ]
+  [ "$(printf '%s' "$body" | jq -r '.result.tools | length')" = "12" ]
   [ "$(printf '%s' "$body" | jq -r '[.result.tools[].inputSchema.properties | keys[]] | map(select(.=="force")) | length')" = "0" ]
 }
 

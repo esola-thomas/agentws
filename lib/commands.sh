@@ -59,6 +59,8 @@ cmd_status() {
     elif [ -f "$(lock_file "$s")" ]; then
       note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
     fi
+    [ "$(slot_reap_state "$s")" = "reap" ] && \
+      note="${note:+$note, }$(c_yel "merged/gone: run agentws recycle $s")"
 
     if [ "$dirty_state" = "clean" ]; then dirty_disp="clean"
     elif [ "$dirty_state" = "phantom-dirty" ]; then dirty_disp="phantom-dirty"
@@ -91,7 +93,7 @@ cmd_free() {
     return 0
   fi
 
-  local any=0 br dirty env
+  local any=0 br dirty env reapable
   for s in $AGENTWS_SLOTS; do
     provider_slot_exists "$s" || continue
     slot_is_reference "$s" && continue
@@ -117,6 +119,10 @@ cmd_free() {
     fi
   done
   [ $any -eq 0 ] && printf '\n%s\n' "$(c_yel 'no free slots - finish or stash something first')"
+  if [ $any -eq 0 ]; then
+    reapable="$(slot_reapable_names)"
+    [ -n "$reapable" ] && printf '%s\n' "$(c_dim "reapable (finished branch, stale or no lock): $reapable; run agentws reap")"
+  fi
   return 0
 }
 
@@ -174,6 +180,13 @@ cmd_claim() {
       return 0
     done
   done
+
+  local reapable
+  reapable="$(slot_reapable_names)"
+  if [ -n "$reapable" ]; then
+    printf 'no claimable slot, but %s can be reaped: run agentws reap\n' "$reapable" >&2
+    return 5
+  fi
 
   if [ "${JSON:-0}" -ne 1 ]; then
     if [ "${REQUIRE_ENV:-0}" -eq 1 ]; then
@@ -370,7 +383,8 @@ cmd_recycle() {
     printf '%s\n' "$(lock_format_refusal "$s")" >&2
     return 9
   fi
-  if [ -f "$(lock_file "$s")" ] && ! lock_mine "$s"; then
+  if [ -f "$(lock_file "$s")" ] && ! lock_mine "$s" && \
+     ! { [ "${REAP_STALE:-0}" -eq 1 ] && lock_is_stale "$s"; }; then
     printf '%s is held by %s, not you (%s)\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" >&2
     return 4
   fi
@@ -481,6 +495,79 @@ EOF
 }
 
 cmd_done() { cmd_recycle "$@"; }
+
+# ------------------------------------------------------------------- reap
+# Recycle every slot whose task is finished: stale or no lock, branch gone
+# upstream or merged into origin/<default>, tree clean or only submodule lag.
+# An active lock is never touched, a slot with real changes is listed and left
+# alone, and the reference and excluded slots are not candidates.
+cmd_reap() {
+  [ $# -eq 0 ] || { printf 'reap takes no arguments\n' >&2; return 2; }
+  local s st br why out rc failed=0
+  local cands=() recs=()
+
+  for s in $AGENTWS_SLOTS; do
+    [ "$(slot_role "$s")" = "work" ] && provider_slot_exists "$s" || continue
+    run git -C "$(provider_slot_path "$s")" fetch origin --prune --quiet >&2 || true
+  done
+
+  for s in $AGENTWS_SLOTS; do
+    st="$(slot_reap_state "$s")"
+    [ "$st" = "none" ] && continue
+    br="$(slot_branch "$s")"
+    why="$(slot_merged_gone "$s")"
+    if [ "$st" = "dirty" ]; then
+      sayf '  %s %s (%s): %s changed files, not reaping\n' "$(c_yel REFUSE)" "$(slot_name "$s")" "$br" "$(slot_dirty_count "$s")"
+      recs+=("$(_reap_rec "$s" "$br" "$why" refused "$(slot_dirty_count "$s") uncommitted files")")
+    else
+      cands+=("$s")
+      sayf '  %s (%s, %s)\n' "$(slot_name "$s")" "$br" "$why"
+    fi
+  done
+
+  if [ ${#cands[@]} -eq 0 ]; then
+    sayf 'nothing to reap\n'
+  elif [ "${JSON:-0}" -eq 1 ] && [ "${ASSUME_YES:-0}" -ne 1 ] && [ "${DRY:-0}" -ne 1 ]; then
+    sayf '%s refusing to recycle without --yes under --json\n' "$(c_yel SKIP)"
+    for s in "${cands[@]+"${cands[@]}"}"; do
+      recs+=("$(_reap_rec "$s" "$(slot_branch "$s")" "$(slot_merged_gone "$s")" skipped "needs --yes")")
+    done
+  elif confirm "recycle ${#cands[@]} slot(s)?"; then
+    for s in "${cands[@]+"${cands[@]}"}"; do
+      br="$(slot_branch "$s")"; why="$(slot_merged_gone "$s")"
+      if [ "${DRY:-0}" -eq 1 ]; then
+        sayf '  would recycle %s\n' "$(slot_name "$s")"
+        recs+=("$(_reap_rec "$s" "$br" "$why" would_recycle "")")
+        continue
+      fi
+      rc=0
+      out="$( JSON=0 CLAIM_BRANCH="" CLEAN_UNTRACKED=0 FORCE=1 REAP_STALE=1 cmd_recycle "$s" 2>&1 )" || rc=$?
+      printf '%s\n' "$out" >&2
+      if [ "$rc" -eq 0 ]; then
+        recs+=("$(_reap_rec "$s" "$br" "$why" recycled "")")
+      else
+        failed=$((failed + 1))
+        recs+=("$(_reap_rec "$s" "$br" "$why" failed "$(printf '%s' "$out" | tail -1)")")
+      fi
+    done
+  else
+    sayf 'skipped\n'
+    for s in "${cands[@]+"${cands[@]}"}"; do
+      recs+=("$(_reap_rec "$s" "$(slot_branch "$s")" "$(slot_merged_gone "$s")" skipped "declined")")
+    done
+  fi
+
+  if [ "${JSON:-0}" -eq 1 ]; then
+    printf '{"dry_run":%s,"slots":[%s]}' "$(jbool "${DRY:-0}")" "$(jjoin "${recs[@]+"${recs[@]}"}")"
+  fi
+  [ "$failed" -eq 0 ] || return 8
+  return 0
+}
+
+_reap_rec() { # _reap_rec <slot> <branch> <reason> <status> <detail>
+  printf '{"slot":%s,"name":%s,"branch":%s,"reason":%s,"status":%s,"detail":%s}' \
+    "$(jstr "$1")" "$(jstr "$(slot_name "$1")")" "$(jstr "$2")" "$(jstr "$3")" "$(jstr "$4")" "$(jstr "$5")"
+}
 
 # --------------------------------------------------------------------- sync
 # Fetch and prune remote-tracking refs in every slot, then park the reference

@@ -15,6 +15,7 @@
 | `lock <slot> "reason"` / `unlock <slot>` | Lock or release a specific slot. |
 | `locks` | All locks with age and remaining TTL. |
 | `recycle <slot>` / `done <slot>` | After merge: fetch, park detached at `origin/<default>`, delete the task branch, release. |
+| `reap` | Recycle every slot with a stale or no lock, a branch gone upstream or merged into `origin/<default>`, and a clean tree (or only submodule lag). Never touches an active lock, the reference or excluded slots, or real uncommitted changes (listed and refused). Asks once; `--yes` skips it, `--dry-run` previews, `--json` needs one of them. |
 | `refresh [slot...]` | Park idle slots detached at `origin/<default>`, healing phantom dirt. |
 | `sync [slot...]` | Fetch and prune in every slot, and park the reference slot detached at `origin/<default>`. It does not update work slots or your branch: `refresh` advances idle slots, and a slot you hold is yours to rebase. Exits non-zero when a fetch fails or the reference is dirty. |
 | `prune [slot...]` | Delete merged local branches. |

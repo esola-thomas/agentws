@@ -20,6 +20,7 @@
 #   agentws refresh [slot...]      park idle slots at origin/<default>, healing phantom dirt
 #   agentws recycle <slot>         return a finished slot to service and release it
 #   agentws done <slot>            alias for recycle
+#   agentws reap                   recycle every finished slot with a stale or no lock
 #   agentws create <slot>          create a slot; --with-env provisions its environment
 #   agentws destroy <slot>         remove a slot via the provider
 #   agentws doctor [slot...]       health checks, core plus provider
@@ -187,6 +188,7 @@ case "$CMD" in
   refresh)  envelope_run refresh cmd_refresh "$@" ;;
   recycle)  envelope_run recycle cmd_recycle "$@" ;;
   'done')   envelope_run done    cmd_done    "$@" ;;
+  reap)     envelope_run reap    cmd_reap    "$@" ;;
   create)   envelope_run create  cmd_create  "$@" ;;
   destroy)  envelope_run destroy cmd_destroy "$@" ;;
   doctor)   envelope_run doctor  cmd_doctor  "$@" ;;

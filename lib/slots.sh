@@ -276,6 +276,53 @@ slot_free() { # slot_free <slot>
   slot_parked "$1"
 }
 
+# ------------------------------------------------------------------- reap
+# A finished task leaves its slot on a branch whose work is already in
+# origin/<default>. These probes find such slots so status can point at them
+# and reap can return them to service.
+
+# PREDICATE: the slot's branch is finished. Prints why: "gone" (its upstream
+# was deleted) or "merged" (origin/<default> contains it). A detached slot, or
+# one on the default branch, has no task branch and never matches.
+slot_merged_gone() { # slot_merged_gone <slot> -> gone|merged, rc 1 if neither
+  local s="$1" d br
+  d="$(provider_slot_path "$s")"
+  br="$(slot_branch "$s")"
+  [ -n "$br" ] && [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ] || return 1
+  if [ "$(git -C "$d" for-each-ref --format '%(upstream:track)' "refs/heads/$br" 2>/dev/null)" = "[gone]" ]; then
+    printf 'gone'; return 0
+  fi
+  if git -C "$d" merge-base --is-ancestor "$br" "origin/$AGENTWS_DEFAULT_BRANCH" 2>/dev/null; then
+    printf 'merged'; return 0
+  fi
+  return 1
+}
+
+# reap: a work slot with a stale or no lock, a finished branch, and nothing but
+# submodule lag to lose. dirty: the same, but the tree holds real changes.
+# none: anything else, including every slot someone may be using.
+slot_reap_state() { # slot_reap_state <slot> -> reap|dirty|none
+  local s="$1"
+  [ "$(slot_role "$s")" = "work" ] || { printf 'none'; return 0; }
+  provider_slot_exists "$s" || { printf 'none'; return 0; }
+  if [ -f "$(lock_file "$s")" ] && ! lock_is_stale "$s"; then printf 'none'; return 0; fi
+  slot_merged_gone "$s" >/dev/null || { printf 'none'; return 0; }
+  if [ "$(slot_dirty_count "$s")" = "0" ] || slot_submodule_only_dirt "$s"; then
+    printf 'reap'
+  else
+    printf 'dirty'
+  fi
+}
+
+# Names of the slots reap would recycle, space-separated.
+slot_reapable_names() {
+  local s out=""
+  for s in $AGENTWS_SLOTS; do
+    [ "$(slot_reap_state "$s")" = "reap" ] && out="${out:+$out }$(slot_name "$s")"
+  done
+  printf '%s' "$out"
+}
+
 # ------------------------------------------------------------------- json
 json_lock_obj() { # json_lock_obj <slot> -> object or null
   local s="$1" sr
