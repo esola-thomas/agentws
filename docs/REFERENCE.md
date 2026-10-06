@@ -14,8 +14,8 @@
 | `claim "reason"` | Lock the first claimable slot. `--print-env` for `eval`. |
 | `lock <slot> "reason"` / `unlock <slot>` | Lock or release a specific slot. |
 | `locks` | All locks with age and remaining TTL. |
-| `recycle <slot>` / `done <slot>` | After merge: fetch, reset to `origin/<default>`, delete the task branch, release. |
-| `refresh [slot...]` | Heal phantom-dirty idle slots. |
+| `recycle <slot>` / `done <slot>` | After merge: fetch, park detached at `origin/<default>`, delete the task branch, release. |
+| `refresh [slot...]` | Park idle slots detached at `origin/<default>`, healing phantom dirt. |
 | `sync [slot...]` / `prune [slot...]` | Fetch; delete merged local branches. |
 | `create <slot>` / `destroy <slot>` | Make or remove a slot through the provider. |
 | `doctor [slot...]` | Health checks. `--fix-env` provisions environments. |
@@ -57,15 +57,21 @@ parser accepts a strict subset of YAML and refuses anything else with a
 ready environment; `claim --require-env` refuses to fall back. Providers can
 return a bootstrap hint with the claimed slot.
 
-Worktree slots become `phantom-dirty` when another worktree advances the shared
-default branch ref. `refresh` heals only a tree whose index matches an ancestor
-of `origin/<default_branch>` with no extra changes; all other dirt is refused.
-`auto_refresh: true` runs the same proof at claim time.
+An idle slot is parked: HEAD detached at a commit `origin/<default_branch>`
+contains. `create` and `recycle` leave it there, and only a parked, clean,
+unlocked slot is claimable. Idle slots share no branch ref, so one slot's
+reset cannot move another's HEAD. `refresh` moves a clean idle slot to the
+current `origin/<default_branch>`. A slot still on the default branch (the
+layout before parking) can go `phantom-dirty` when another worktree advances
+that ref; `refresh` heals only a tree whose index matches an ancestor of
+`origin/<default_branch>` with no extra changes, then parks it. All other dirt
+is refused. `auto_refresh: true` runs the same repair at claim time. `doctor`
+warns when a branch is checked out in more than one worktree.
 
 `recycle` refuses untracked files unless `--clean-untracked` is explicit, and
 never discards tracked changes. Claims can carry `--task-id`, `--branch`,
 `--agent`, and a `--ttl` capped by `ttl_hours`. `auto_release: true` lets
-`doctor` release a locked slot that stays clean on the default branch for
+`doctor` release a locked slot that stays clean and parked for
 `auto_release_minutes`.
 
 ## Providers

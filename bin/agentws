@@ -16,7 +16,7 @@
 #   agentws locks                  show all locks and their age
 #   agentws sync [slot...]         fetch + prune; fast-forward the reference slot
 #   agentws prune [slot...]        delete merged local branches, after listing them
-#   agentws refresh [slot...]      safely heal phantom-dirty idle slots
+#   agentws refresh [slot...]      park idle slots at origin/<default>, healing phantom dirt
 #   agentws recycle <slot>         return a finished slot to service and release it
 #   agentws done <slot>            alias for recycle
 #   agentws create <slot>          create a slot; --with-env provisions its environment

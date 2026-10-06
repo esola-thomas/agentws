@@ -20,8 +20,6 @@ setup() {
   git -C "$SRC" add file
   git -C "$SRC" commit -q -m old
   git -C "$SRC" push -q -u origin main
-  git -C "$SRC" worktree add -q --force "$ROOT/1_proj" main
-  git -C "$SRC" worktree add -q --force "$ROOT/2_proj" main
 
   {
     printf 'version: 1\n'
@@ -41,18 +39,63 @@ setup() {
   export AGENTWS_PROC="$SANDBOX/proc"
   mkdir -p "$AGENTWS_PROC"
   HOSTNAME_SHORT="$(hostname -s 2>/dev/null || echo host)"
+  agentws create 1 >/dev/null 2>&1
+  agentws create 2 >/dev/null 2>&1
 }
 
 teardown() { teardown_sandbox; }
 
 advance_main() {
-  printf 'new\n' > "$SRC/file"
+  printf 'new\n' >> "$SRC/file"
   git -C "$SRC" add file
   git -C "$SRC" commit -q -m new
   git -C "$SRC" push -q
 }
 
-@test "status distinguishes phantom dirt and refresh heals only verified dirt" {
+parked() { # parked <slot-dir>: detached at origin/main
+  ! git -C "$1" symbolic-ref -q HEAD >/dev/null &&
+    [ "$(git -C "$1" rev-parse HEAD)" = "$(git -C "$1" rev-parse origin/main)" ]
+}
+
+# The layout before slots were parked: every idle slot on the one main ref.
+shared_main_layout() {
+  git -C "$ROOT/1_proj" checkout -q --ignore-other-worktrees main
+  git -C "$ROOT/2_proj" checkout -q --ignore-other-worktrees main
+}
+
+@test "create parks slots detached, so a default-branch advance leaves them clean" {
+  parked "$ROOT/1_proj"
+  parked "$ROOT/2_proj"
+  [ "$(git -C "$SRC" worktree list --porcelain | grep -c '^branch refs/heads/main$')" -eq 1 ]
+
+  advance_main
+  run agentws status --json
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '[.data.slots[].dirty_state] | unique | join(",")')" = "clean" ]
+  [ "$(printf '%s' "$output" | jq -r '[.data.slots[].claimable] | unique | join(",")')" = "true" ]
+}
+
+@test "refresh advances a parked slot that is behind and refuses local commits" {
+  advance_main
+  run agentws refresh --json 1
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.data.slots[0].status')" = "refreshed" ]
+  parked "$ROOT/1_proj"
+
+  run agentws refresh --json 1
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.data.slots[0].status')" = "unchanged" ]
+
+  printf 'mine\n' > "$ROOT/2_proj/mine"
+  git -C "$ROOT/2_proj" add mine
+  git -C "$ROOT/2_proj" commit -q -m mine
+  run agentws refresh --json 2
+  [ "$status" -eq 8 ]
+  git -C "$ROOT/2_proj" cat-file -e HEAD:mine
+}
+
+@test "refresh heals phantom dirt on a shared default branch and parks the slots" {
+  shared_main_layout
   advance_main
   run agentws status --json
   [ "$status" -eq 0 ]
@@ -63,6 +106,7 @@ advance_main() {
   local json="${lines[${#lines[@]}-1]}"
   [ "$(printf '%s' "$json" | jq -r '.data.slots[0].status')" = "refreshed" ]
   [ -z "$(git -C "$ROOT/1_proj" status --porcelain)" ]
+  parked "$ROOT/1_proj"
 
   printf 'personal\n' >> "$ROOT/2_proj/file"
   run agentws refresh --json 2
@@ -70,16 +114,33 @@ advance_main() {
   json="${lines[${#lines[@]}-1]}"
   [ "$(printf '%s' "$json" | jq -r '.error.code')" = "EGIT" ]
   grep -q personal "$ROOT/2_proj/file"
+
+  # Parked slots share no ref: the next advance leaves slot 1 clean.
+  advance_main
+  [ -z "$(git -C "$ROOT/1_proj" status --porcelain)" ]
+}
+
+@test "doctor flags a branch checked out in more than one worktree" {
+  run agentws doctor --json 1
+  [ "$(printf '%s' "$output" | jq -r '[.data.slots[0].checks[] | select(.id=="shared_branch")] | length')" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.data.slots[0].checks[] | select(.id=="branch") | .status')" = "pass" ]
+
+  shared_main_layout
+  run agentws doctor --json 1
+  [ "$(printf '%s' "$output" | jq -r '.data.slots[0].checks[] | select(.id=="shared_branch") | .status')" = "warn" ]
+  printf '%s' "$output" | jq -r '.data.slots[0].checks[] | select(.id=="shared_branch") | .detail' | grep -q "$ROOT/2_proj"
 }
 
 @test "auto_refresh lets claim safely recover a phantom-dirty slot" {
   printf 'auto_refresh: true\n' >> "$CONFIG"
+  shared_main_layout
   advance_main
   run agentws claim --json work
   [ "$status" -eq 0 ]
   local json="${lines[${#lines[@]}-1]}"
   [ "$(printf '%s' "$json" | jq -r '.data.slot')" = "1" ]
   [ "$(printf '%s' "$json" | jq -r '.data.dirty_state')" = "clean" ]
+  parked "$ROOT/1_proj"
 }
 
 @test "recycle reports untracked files then cleans, resets, deletes, and releases" {
@@ -101,7 +162,8 @@ advance_main() {
   [ "$status" -eq 0 ]
   local json="${lines[${#lines[@]}-1]}"
   [ "$(printf '%s' "$json" | jq -r '.data.deleted_branch')" = "feat/recycle" ]
-  [ "$(git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
+  [ "$(printf '%s' "$json" | jq -r '.data.parked_at')" = "origin/main" ]
+  parked "$ROOT/1_proj"
   [ ! -f "$(lock_path 1)" ]
   [ ! -e "$ROOT/1_proj/SCRATCH" ]
   ! git -C "$ROOT/1_proj" show-ref --verify --quiet refs/heads/feat/recycle
@@ -120,7 +182,7 @@ advance_main() {
   local json="${lines[${#lines[@]}-1]}"
   [ "$(printf '%s' "$json" | jq -r '.command')" = "done" ]
   [ "$(printf '%s' "$json" | jq -r '.data.released')" = "false" ]
-  [ "$(git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
+  parked "$ROOT/1_proj"
 }
 
 @test "destroy refuses a format=2 lock; --force --yes gets past it" {
@@ -134,4 +196,22 @@ advance_main() {
   [ "$status" -eq 0 ]
   [ ! -d "$ROOT/1_proj" ]
   [ ! -f "$(lock_path 1)" ]
+}
+
+@test "fullclone create parks the clone detached at origin/main" {
+  sed -i.bak -e 's/^provider: worktree$/provider: fullclone/' -e 's/^slots: \[1,2\]$/slots: [3]/' \
+    -e "s|^  source_repo: .*|  source_repo: $REMOTE|" "$CONFIG" && rm -f "$CONFIG.bak"
+  run agentws create 3
+  [ "$status" -eq 0 ]
+  parked "$ROOT/3_proj"
+  [ "$(agentws status --json | jq -r '.data.slots[0].claimable')" = "true" ]
+}
+
+@test "refresh leaves the reference slot on the default branch" {
+  git -C "$ROOT/1_proj" checkout -q --ignore-other-worktrees main
+  printf 'reference_slot: "1"\n' >> "$CONFIG"
+  run agentws refresh --json
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.data.slots[] | select(.slot=="1") | .status')" = "skipped" ]
+  [ "$(git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
 }

@@ -61,7 +61,7 @@ setup() {
   git -C "$SRC" commit -q -m "pin sub at A"
   git -C "$SRC" push -q -u origin main
 
-  git -C "$SRC" worktree add -q --force "$ROOT/1_proj" main
+  git -C "$SRC" worktree add -q --detach "$ROOT/1_proj" origin/main
   git -C "$ROOT/1_proj" submodule update --init -q
 
   {
@@ -107,7 +107,8 @@ slot_claimable_json() {
   run agentws recycle --json 1
   [ "$status" -eq 0 ]
 
-  [ "$(git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
+  ! git -C "$ROOT/1_proj" symbolic-ref -q HEAD
+  [ "$(git -C "$ROOT/1_proj" rev-parse HEAD)" = "$(git -C "$ROOT/1_proj" rev-parse origin/main)" ]
   [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_A" ]
   [ -z "$(git -C "$ROOT/1_proj" status --porcelain)" ]
   [ "$(slot_claimable_json)" = "true" ]
@@ -185,7 +186,7 @@ slot_claimable_json() {
 }
 
 @test "recycling one slot does not disturb another slot's submodule" {
-  git -C "$SRC" worktree add -q --force "$ROOT/2_proj" main
+  git -C "$SRC" worktree add -q --detach "$ROOT/2_proj" origin/main
   git -C "$ROOT/2_proj" submodule update --init -q
   sed -i.bak 's/^slots: \[1\]$/slots: [1,2]/' "$CONFIG" && rm -f "$CONFIG.bak"
   git -C "$ROOT/2_proj/sub" checkout -q "$SUB_B"

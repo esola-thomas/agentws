@@ -48,8 +48,8 @@ cwd with the same env and flags; the work on disk is always intact.
 1. **Bootstrap before the first gate.** Run the bootstrap hint or the
    project's setup doc (`uv sync`, `npm ci`, the project's setup script,
    submodule init). A first gate that fails on missing tooling is not a code problem.
-2. **Branch now.** `git checkout -b <branch> origin/<base>`. Never commit on
-   the default branch inside a slot: the ref is shared with every other slot.
+2. **Branch now.** `git checkout -b <branch> origin/<base>`. An idle slot is
+   parked detached at `origin/<default>`; a commit made there is on no branch.
 3. **Foreground only.** Every gate, test, and reviewer call is a plain Bash
    call with an explicit `timeout: 600000`. Never `run_in_background`, never
    Monitor or task tools to wait, never end a turn saying what you will run
@@ -63,8 +63,8 @@ cwd with the same env and flags; the work on disk is always intact.
 ## Recycle (orchestrator, after merge)
 
 ```bash
-agentws recycle "$AGENTWS_SLOT"     # fetch, reset to origin/<default>, drop branch, unlock
-agentws refresh                     # heal phantom-dirty idle slots the merge created
+agentws recycle "$AGENTWS_SLOT"     # fetch, park at origin/<default>, drop branch, unlock
+agentws refresh                     # park idle slots at the new origin/<default>
 ```
 
 Submodule pointer merges are handled: `recycle` and `refresh` resync submodules

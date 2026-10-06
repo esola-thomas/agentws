@@ -136,9 +136,9 @@ cmd_claim() {
     for s in $AGENTWS_SLOTS; do
       [ "$(slot_role "$s")" = "work" ] || continue
       lock_active "$s" && continue
-      if slot_phantom_base "$s" >/dev/null; then
-        _refresh_slot "$s" auto >/dev/null 2>&1 || true
-      fi
+      slot_claimable "$s" && continue
+      # _refresh_slot refuses anything that is not provably idle.
+      _refresh_slot "$s" auto >/dev/null 2>&1 || true
     done
   fi
 
@@ -251,11 +251,19 @@ REFRESH_STATUS=""
 REFRESH_DETAIL=""
 REFRESH_BASE=""
 
+# Park an idle slot detached at origin/<default>. A slot still on the default
+# branch is detached first, so the reset that follows moves only this slot's
+# HEAD and never a ref another worktree has checked out.
 _refresh_slot() { # _refresh_slot <slot> <manual|auto>
-  local s="$1" mode="${2:-manual}" d state
+  local s="$1" mode="${2:-manual}" d br state target
   REFRESH_STATUS="refused"; REFRESH_DETAIL=""; REFRESH_BASE=""
   d="$(provider_slot_path "$s")"
+  target="origin/$AGENTWS_DEFAULT_BRANCH"
   provider_slot_exists "$s" || { REFRESH_DETAIL="not created"; return 6; }
+  if slot_is_reference "$s"; then
+    REFRESH_STATUS="skipped"; REFRESH_DETAIL="reference slot; sync maintains it"
+    return 0
+  fi
   if lock_format_unsupported "$s"; then
     REFRESH_DETAIL="$(lock_format_refusal "$s")"
     return 9
@@ -264,8 +272,9 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
     REFRESH_DETAIL="locked by $(lock_read "$s" owner)"
     return 4
   fi
-  if [ "$(slot_branch "$s")" != "$AGENTWS_DEFAULT_BRANCH" ]; then
-    REFRESH_DETAIL="not on $AGENTWS_DEFAULT_BRANCH"
+  br="$(slot_branch "$s")"
+  if [ -n "$br" ] && [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ]; then
+    REFRESH_DETAIL="on branch $br, not idle"
     return 8
   fi
   if [ "$mode" = "manual" ]; then
@@ -274,41 +283,48 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
       return 8
     fi
   fi
+  if ! git -C "$d" rev-parse --verify --quiet "$target" >/dev/null; then
+    REFRESH_DETAIL="$target is unavailable"
+    return 8
+  fi
+  if [ -z "$br" ] && ! slot_parked "$s"; then
+    REFRESH_DETAIL="detached HEAD has commits not in $target"
+    return 8
+  fi
+
   state="$(slot_dirty_state "$s")"
   if [ "$state" = "clean" ]; then
-    REFRESH_STATUS="unchanged"; REFRESH_DETAIL="already clean"
-    return 0
-  fi
-  if [ "$state" != "phantom-dirty" ]; then
-    # A slot whose only dirt is a submodule lagging its gitlink is not phantom
-    # dirt: the index already agrees with origin/<default>, only the submodule
-    # checkout lags. There is no phantom base commit to name, and the repair is
-    # the hook rather than a reset.
-    if slot_submodule_only_dirt "$s"; then
-      _slot_reset_hook "$s" "$d" "origin/$AGENTWS_DEFAULT_BRANCH" \
-        || { REFRESH_DETAIL="$SLOT_RESET_DETAIL"; return 7; }
-      if [ "${DRY:-0}" -eq 1 ]; then
-        REFRESH_STATUS="would-refresh"; REFRESH_DETAIL="submodules lag origin/$AGENTWS_DEFAULT_BRANCH"
-      else
-        REFRESH_STATUS="refreshed"; REFRESH_DETAIL="synced submodules to origin/$AGENTWS_DEFAULT_BRANCH"
-      fi
+    if [ -z "$br" ] && [ "$(git -C "$d" rev-parse HEAD)" = "$(git -C "$d" rev-parse "$target")" ]; then
+      REFRESH_STATUS="unchanged"; REFRESH_DETAIL="already parked at $target"
       return 0
     fi
-    REFRESH_DETAIL="dirty content is not fully explained by a default-branch advance"
-    return 8
+    # checkout, not reset: an ignored file in the way is refused, not overwritten.
+    if ! run git -C "$d" checkout --quiet --detach "$target" >&2; then
+      REFRESH_DETAIL="git checkout failed"
+      return 8
+    fi
+  else
+    # Phantom dirt, or a submodule checkout lagging its gitlink: both are proven
+    # to hold no one's work, and a reset plus the hook repairs both.
+    if [ "$state" = "phantom-dirty" ]; then
+      REFRESH_BASE="$(slot_phantom_base "$s")"
+    elif ! slot_submodule_only_dirt "$s"; then
+      REFRESH_DETAIL="dirty content is not fully explained by a default-branch advance"
+      return 8
+    fi
+    if ! run git -C "$d" checkout --quiet --detach >&2 || \
+       ! run git -C "$d" reset --hard --quiet "$target" >&2; then
+      REFRESH_DETAIL="git reset failed"
+      return 8
+    fi
   fi
-  REFRESH_BASE="$(slot_phantom_base "$s")"
-  if ! run git -C "$d" reset --hard "origin/$AGENTWS_DEFAULT_BRANCH" >/dev/null; then
-    REFRESH_DETAIL="git reset failed"
-    return 8
-  fi
-  # The reset moved the gitlinks; it did not move the submodule working trees.
-  _slot_reset_hook "$s" "$d" "origin/$AGENTWS_DEFAULT_BRANCH" \
+  # The move shifted the gitlinks; it did not move the submodule working trees.
+  _slot_reset_hook "$s" "$d" "$target" \
     || { REFRESH_DETAIL="$SLOT_RESET_DETAIL"; return 7; }
   if [ "${DRY:-0}" -eq 1 ]; then
-    REFRESH_STATUS="would-refresh"; REFRESH_DETAIL="verified phantom dirt"
+    REFRESH_STATUS="would-refresh"; REFRESH_DETAIL="would park at $target"
   else
-    REFRESH_STATUS="refreshed"; REFRESH_DETAIL="reset verified phantom dirt to origin/$AGENTWS_DEFAULT_BRANCH"
+    REFRESH_STATUS="refreshed"; REFRESH_DETAIL="parked at $target"
   fi
   return 0
 }
@@ -414,16 +430,14 @@ EOF
     return 8
   fi
 
-  if [ "$current" = "$AGENTWS_DEFAULT_BRANCH" ]; then
-    if ! git -C "$d" merge-base --is-ancestor HEAD "$target" 2>/dev/null; then
-      printf '%s has default-branch commits not contained in %s\n' "$(slot_name "$s")" "$target" >&2
-      return 8
-    fi
-  fi
-  run git -C "$d" checkout --ignore-other-worktrees -B "$AGENTWS_DEFAULT_BRANCH" "$target" --quiet || {
-    printf 'could not return %s to %s\n' "$(slot_name "$s")" "$AGENTWS_DEFAULT_BRANCH" >&2
+  # Detach first, so the reset moves only this slot's HEAD and never a branch
+  # another worktree has checked out. Everything it discards was proven above
+  # to be phantom dirt or a gitlink the post-reset hook restores.
+  if ! run git -C "$d" checkout --quiet --detach >&2 || \
+     ! run git -C "$d" reset --hard --quiet "$target" >&2; then
+    printf 'could not park %s at %s\n' "$(slot_name "$s")" "$target" >&2
     return 8
-  }
+  fi
 
   if [ -n "$delete_branch" ] && [ "$delete_branch" != "$AGENTWS_DEFAULT_BRANCH" ] && \
      git -C "$d" show-ref --verify --quiet "refs/heads/$delete_branch"; then
@@ -436,7 +450,7 @@ EOF
   fi
   [ "$rc" -eq 0 ] || return "$rc"
 
-  # The parent is on the default branch now, but a checkout does not move a
+  # The parent is parked at the target now, but a reset does not move a
   # submodule working tree. Let the provider bring the rest of the slot to the
   # same revision while the lock is still held: everything below this point
   # hands the slot to someone else.
@@ -455,13 +469,13 @@ EOF
   fi
 
   if [ "${JSON:-0}" -eq 1 ]; then
-    printf '{"slot":%s,"name":%s,"path":%s,"branch":%s,"deleted_branch":%s,"removed_untracked":[%s],"released":%s}' \
+    printf '{"slot":%s,"name":%s,"path":%s,"parked_at":%s,"deleted_branch":%s,"removed_untracked":[%s],"released":%s}' \
       "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$d")" \
-      "$(jstr "$AGENTWS_DEFAULT_BRANCH")" \
+      "$(jstr "$target")" \
       "$(if [ -n "$deleted" ]; then jstr "$deleted"; else printf 'null'; fi)" \
       "$(jjoin "${removed[@]+"${removed[@]}"}")" "$(jbool "$released")"
   else
-    printf '%s recycled %s on %s\n' "$(c_grn OK)" "$(slot_name "$s")" "$AGENTWS_DEFAULT_BRANCH"
+    printf '%s recycled %s, parked at %s\n' "$(c_grn OK)" "$(slot_name "$s")" "$target"
   fi
   return 0
 }
@@ -767,8 +781,7 @@ _auto_release_check() { # _auto_release_check <slot>
     AUTO_RELEASE_DETAIL="$(lock_format_refusal "$s")"
     return 0
   fi
-  if ! lock_active "$s" || [ "$(slot_branch "$s")" != "$AGENTWS_DEFAULT_BRANCH" ] || \
-     [ "$(slot_dirty_count "$s")" != "0" ]; then
+  if ! lock_active "$s" || ! slot_parked "$s" || [ "$(slot_dirty_count "$s")" != "0" ]; then
     [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
     return 0
   fi
@@ -817,7 +830,7 @@ _auto_release_check() { # _auto_release_check <slot>
 # line as "status<TAB>..." or "STATUS check detail"; both forms are normalised
 # by _doctor_norm.
 cmd_doctor() {
-  local targets s d ok line recs env_state objs=() anybad=0
+  local targets s d ok line recs env_state elsewhere objs=() anybad=0
 
   if [ $# -gt 0 ]; then
     targets="$(_cmd_resolve_targets "$@")" || return 6
@@ -838,9 +851,16 @@ cmd_doctor() {
 
     if [ -n "$(slot_branch "$s")" ]; then
       recs="$(jjoin "$recs" "$(_doctor_rec branch pass "$(slot_branch "$s")")")"
+    elif git -C "$d" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+      recs="$(jjoin "$recs" "$(_doctor_rec branch pass "detached at $(git -C "$d" rev-parse --short HEAD)")")"
     else
       recs="$(jjoin "$recs" "$(_doctor_rec branch fail 'HEAD unresolvable')")"
       ok=0
+    fi
+
+    elsewhere="$(slot_branch_elsewhere "$s" | tr '\n' ' ')"
+    if [ -n "$elsewhere" ]; then
+      recs="$(jjoin "$recs" "$(_doctor_rec shared_branch warn "$(slot_branch "$s") is also checked out in ${elsewhere% }; a ref move in one changes HEAD in all of them. agentws refresh parks idle slots detached")")"
     fi
 
     if [ -n "$(slot_upstream "$s")" ]; then

@@ -30,6 +30,7 @@ make_repo() { # make_repo <dir>
   : > "$1/README"
   git -C "$1" add README
   git -C "$1" commit -q -m init
+  git -C "$1" update-ref refs/remotes/origin/main HEAD
 }
 
 stub() { # stub <name>: a CLI that appends its argv to $SANDBOX/<name>.log
