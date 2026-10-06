@@ -27,6 +27,9 @@ All notable changes to this project are recorded here. Format follows
 - `doctor` passes a slot with a detached HEAD instead of reporting
   `HEAD unresolvable`, and warns (`shared_branch`) when a slot's branch is
   checked out in more than one worktree.
+- `agentws prune`: `--dry-run` says `would delete` instead of `deleted`; each
+  repo is scanned once instead of once per slot; any branch checked out in any
+  worktree is never a candidate. `--json` records gain `would_delete`. (#23)
 
 ## [0.0.1] - 2026-10-01
 
