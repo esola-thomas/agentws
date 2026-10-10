@@ -92,8 +92,10 @@ Paths are shell/systemd/XML-escaped; paths containing newlines are refused.
 
 The default schedule wakes every 15 minutes. launchd uses the configured
 interval directly. For minute intervals dividing an hour, cron and systemd
-use native schedules; other intervals use a minute wakeup and elapsed-time
-guard rather than invalid expressions such as `*/71`.
+use native calendar schedules. Other cron intervals use a minute wakeup and
+elapsed-time guard rather than invalid expressions such as `*/71`; systemd
+uses a native monotonic timer for these intervals. Native schedules never
+apply the elapsed-time guard, so jitter cannot cause skipped ticks.
 The runner adds up to 30 seconds of jitter outside systemd; systemd uses
 `OnCalendar`, `Persistent=true`, `RandomizedDelaySec=30`, `CPUWeight=10`, and
 `IOWeight=10`. launchd uses low-priority IO and nice 10. The runner records its
@@ -102,6 +104,7 @@ Native cron status estimates the next calendar tick. Other cron and launchd
 schedules estimate the next run from the last start or installation time;
 systemd reports its next timer wakeup when available. Estimates omit jitter
 and sleep recovery; `next_run` is nullable when the timing is unknown.
+Systemd's persistent catch-up applies to calendar timers, not monotonic ones.
 The JSON schedule data is `{installed, scheduler, next_run}`. Schedule metadata
 lives at `<root>/.agentws/tend-schedule`, independently of the lock registry.
 No schedule is installed by default.

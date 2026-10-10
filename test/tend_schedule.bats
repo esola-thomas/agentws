@@ -247,3 +247,13 @@ MOCK
   [ "$status" -eq 0 ]
   ! grep -q '^sleep ' "$SANDBOX/farm/.agentws/"*.sh
 }
+
+@test "arbitrary systemd interval uses its own timer without an elapsed guard" {
+  export FAKE_BACKEND=systemd
+  printf 'tend_interval_minutes: 71\n' >> "$CONFIG"
+  run schedule install
+  [ "$status" -eq 0 ]
+  grep -Fx 'OnUnitActiveSec=71m' "$XDG_CONFIG_HOME/systemd/user/"*.timer
+  grep -Fx 'gated=0' "$SANDBOX/farm/.agentws/"*.sh
+  ! grep -q '^sleep ' "$SANDBOX/farm/.agentws/"*.sh
+}

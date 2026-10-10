@@ -155,7 +155,7 @@ tend_schedule() {
       cadence="*/$AGENTWS_TEND_INTERVAL_MINUTES"; gated=0
       [ "$AGENTWS_TEND_INTERVAL_MINUTES" -ne 60 ] || cadence=0
     fi
-    [ "$backend" != launchd ] || gated=0
+    [ "$backend" = cron ] || gated=0
     mkdir -p "$state" || return 1
     (
       umask 077
@@ -192,9 +192,17 @@ RUNNER
           printf 'ExecStart=/bin/bash %s\nCPUWeight=10\nIOWeight=10\n' "$(tend_schedule_systemd_quote "$runner")"
         } > "$units/$name.service" || return 1
         local calendar="*"
-        [ "$gated" -ne 0 ] || calendar="0/$AGENTWS_TEND_INTERVAL_MINUTES"
+        [ "$cadence" = "*" ] || calendar="0/$AGENTWS_TEND_INTERVAL_MINUTES"
         [ "$AGENTWS_TEND_INTERVAL_MINUTES" -ne 60 ] || calendar=00
-        printf '# %s\n[Unit]\nDescription=agentws maintenance timer\n[Timer]\nOnCalendar=*-*-* *:%s:00\nPersistent=true\nRandomizedDelaySec=30\n[Install]\nWantedBy=timers.target\n' "$name" "$calendar" > "$units/$name.timer" || return 1
+        {
+          printf '# %s\n[Unit]\nDescription=agentws maintenance timer\n[Timer]\n' "$name"
+          if [ "$cadence" = "*" ]; then
+            printf 'OnActiveSec=1m\nOnUnitActiveSec=%sm\n' "$AGENTWS_TEND_INTERVAL_MINUTES"
+          else
+            printf 'OnCalendar=*-*-* *:%s:00\n' "$calendar"
+          fi
+          printf 'Persistent=true\nRandomizedDelaySec=30\n[Install]\nWantedBy=timers.target\n'
+        } > "$units/$name.timer" || return 1
         systemctl --user daemon-reload >&2 && systemctl --user enable --now "$name.timer" >&2 || return 1 ;;
       cron)
         cron="$(crontab -l 2>/dev/null)" || cron=""
