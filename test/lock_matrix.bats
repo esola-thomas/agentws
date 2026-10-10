@@ -10,6 +10,24 @@
 
 load helper
 
+@test "slot acquisition guard refuses without changing a stale lock" {
+  write_lock_default 1 epoch=1
+  mkdir "$LOCKS/1.acquire"
+  run agentws lock 1 guarded
+  [ "$status" -eq 1 ]
+  [[ "$output" == *BUSY* ]]
+  [ "$(sed -n 's/^owner=//p' "$(lock_path 1)")" = other ]
+}
+
+@test "forced unlock explicitly recovers an abandoned acquisition guard" {
+  mkdir "$LOCKS/1.acquire"
+  run agentws unlock 1 --force
+  [ "$status" -eq 0 ]
+  [ ! -d "$LOCKS/1.acquire" ]
+  run agentws lock 1 recovered
+  [ "$status" -eq 0 ]
+}
+
 setup()    { setup_sandbox 1 2 3; }
 teardown() { teardown_sandbox; }
 

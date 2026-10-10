@@ -71,6 +71,7 @@ cmd_status() {
     printf '%-16s %-28s %-14s %-8s %-7s %s\n' "$(slot_name "$s")" "$br" "$dirty_disp" "$env" "$ahead" "$note"
   done
   [ -n "$missing_names" ] && printf '\n%s\n' "$(c_dim "not created: $missing_names")"
+  tend_notice
   return 0
 }
 
@@ -274,7 +275,7 @@ REFRESH_BASE=""
 # Park an idle slot detached at origin/<default>. A slot still on the default
 # branch is detached first, so the reset that follows moves only this slot's
 # HEAD and never a ref another worktree has checked out.
-_refresh_slot() { # _refresh_slot <slot> <manual|auto>
+_refresh_slot() { # _refresh_slot <slot> <manual|auto|tend>
   local s="$1" mode="${2:-manual}" d br state target
   REFRESH_STATUS="refused"; REFRESH_DETAIL=""; REFRESH_BASE=""
   d="$(provider_slot_path "$s")"
@@ -288,7 +289,7 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
     REFRESH_DETAIL="$(lock_format_refusal "$s")"
     return 9
   fi
-  if lock_active "$s"; then
+  if lock_active "$s" && ! { [ "$mode" = "tend" ] && lock_mine "$s"; }; then
     REFRESH_DETAIL="locked by $(lock_read "$s" owner)"
     return 4
   fi
@@ -323,7 +324,7 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
       return 0
     fi
     # checkout, not reset: an ignored file in the way is refused, not overwritten.
-    if ! run git -C "$d" checkout --quiet --detach "$target" >&2; then
+    if ! run git -C "$d" checkout --quiet --no-overwrite-ignore --detach "$target" >&2; then
       REFRESH_DETAIL="git checkout failed"
       return 8
     fi
