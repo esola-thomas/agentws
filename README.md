@@ -39,6 +39,9 @@ agentws sync          # fetch everywhere; park the reference slot at origin/<def
 
 `sync` updates remote-tracking refs and the reference slot only. It never
 moves a work slot or your branch; `agentws refresh` advances idle slots.
+Reference submodule checkout lag is repaired automatically. Submodules with
+uncommitted content or HEAD commits not on any remote branch are named and
+refused without discarding their work.
 
 That is the whole setup. Start your agents as usual. They see the farm, claim a
 slot, work in it, and recycle it. You never assign directories by hand.
