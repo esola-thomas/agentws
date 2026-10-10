@@ -49,6 +49,14 @@ auto_refresh: false
 auto_release: false
 auto_release_minutes: 30
 
+# Explicit maintenance, optionally installed as a user schedule.
+# tend never self-updates unless enabled here.
+tend_interval_minutes: 15        # positive integer; arbitrary minute intervals
+tend_refresh: true               # safe repair of unlocked idle slots
+tend_reap: false                 # opt in to recycling finished stale/unlocked slots
+tend_fix_env: false              # opt in to provider environment provisioning
+tend_self_update: false          # opt in to managed-install updates
+
 # Central lock registry, deliberately outside the workspaces so that cleaning a
 # workspace cannot destroy a lock. Canonicalised at load.
 lock_dir: "{root}/.agentws/locks"

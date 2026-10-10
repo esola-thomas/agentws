@@ -230,7 +230,7 @@ lock_warn_no_liveness() {
     "$AGENTWS_PROC" "$(lock_config_ttl_hours)" >&2
 }
 
-cmd_lock() {
+cmd_lock() (
   [ $# -ge 1 ] || die "lock needs a slot, e.g. agentws lock 1 \"fp migration\""
   local slot="$1"; shift
   local reason; reason="$(lock_sanitize "${*:-unspecified}")"
@@ -238,6 +238,13 @@ cmd_lock() {
   provider_slot_exists "$slot" || die "$(slot_name "$slot") does not exist"
 
   mkdir -p "$AGENTWS_LOCK_DIR" 2>/dev/null
+  local acquisition="$AGENTWS_LOCK_DIR/$slot.acquire"
+  mkdir "$acquisition" 2>/dev/null || {
+    printf '%s acquisition in progress for %s\n' "$(c_red BUSY)" "$(slot_name "$slot")"
+    return 1
+  }
+  trap 'rmdir "$acquisition" 2>/dev/null || true' EXIT
+  trap 'exit 130' INT TERM HUP
   lock_warn_no_liveness
 
   if [ -f "$f" ]; then
@@ -292,11 +299,14 @@ cmd_lock() {
       "$(lock_read "$slot" owner 2>/dev/null)"
     return 1
   fi
-}
+)
 
 cmd_unlock() {
   [ $# -ge 1 ] || die "unlock needs a slot"
   local slot="$1"; local f; f="$(lock_file "$slot")"
+  if [ "${FORCE:-0}" -eq 1 ] && [ -d "$AGENTWS_LOCK_DIR/$slot.acquire" ]; then
+    run rmdir "$AGENTWS_LOCK_DIR/$slot.acquire" || return 1
+  fi
   [ -f "$f" ] || { printf '%s is not locked\n' "$(slot_name "$slot")"; return 0; }
   if lock_format_unsupported "$slot" && [ "${FORCE:-0}" -eq 0 ]; then
     printf '%s %s\n' "$(c_red REFUSE)" "$(lock_format_refusal "$slot")"
