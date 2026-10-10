@@ -107,10 +107,11 @@ slot_untracked() { # slot_untracked <slot> -> paths, one per line
 # default-branch ref advancing in another worktree. Only a slot left on the
 # default branch can get here; a parked slot shares no ref.
 slot_phantom_base() { # slot_phantom_base <slot>
-  local s="$1" d target head index_tree commit commit_tree
+  local s="$1" d target head index_tree commit commit_tree dirty
   provider_slot_exists "$s" || return 1
   [ "$(slot_current_branch "$s")" = "$AGENTWS_DEFAULT_BRANCH" ] || return 1
-  [ "$(slot_dirty_count "$s")" != "0" ] || return 1
+  dirty="$(slot_dirty_count "$s")"
+  [ "$dirty" != "0" ] && [ "$dirty" != "-1" ] || return 1
   d="$(provider_slot_path "$s")"
 
   [ -z "$(slot_untracked "$s")" ] || return 1
@@ -203,6 +204,7 @@ slot_submodule_only_dirt() { # slot_submodule_only_dirt <slot>
   local d
   d="$(provider_slot_path "$1")"
   [ -f "$d/.gitmodules" ] || return 1
+  [ "$(slot_dirty_count "$1")" != "-1" ] || return 1
   [ -z "$(slot_untracked "$1")" ] || return 1
   [ -z "$(slot_submodule_untracked "$1")" ] || return 1
   git -C "$d" diff --quiet --ignore-submodules=all -- 2>/dev/null || return 1

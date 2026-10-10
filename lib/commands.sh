@@ -327,6 +327,9 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
       REFRESH_DETAIL="git checkout failed"
       return 8
     fi
+  elif [ "$state" = "broken" ]; then
+    REFRESH_DETAIL="unreadable git state; run agentws doctor $s"
+    return 8
   else
     # Phantom dirt, or a submodule checkout lagging its gitlink: both are proven
     # to hold no one's work, and a reset plus the hook repairs both.
@@ -631,13 +634,17 @@ cmd_sync() {
       st="fail"; SLOT_RESET_DETAIL=""
       # Phantom dirt is the shared default-branch ref moving under the
       # reference, not anyone's work: detach, then reset only this HEAD.
-      if [ -z "$unsafe" ] && [ "$dirty" != "0" ] && slot_phantom_base "$s" >/dev/null && \
+      if [ -z "$unsafe" ] && [ "$dirty" != "0" ] && [ "$dirty" != "-1" ] && \
+         slot_phantom_base "$s" >/dev/null && \
          run git -C "$d" checkout --quiet --detach >&2 && \
          run git -C "$d" reset --hard --quiet "$target" >&2; then
         dirty=0
         sayf '  reset phantom dirt\n'
       fi
-      if [ -n "$unsafe" ]; then
+      if [ "$dirty" = "-1" ]; then
+        detail="reference has unreadable git state; not parked at $target; run agentws doctor $s"
+        sayf '  %s %s\n' "$(c_red FAIL)" "$detail"
+      elif [ -n "$unsafe" ]; then
         detail="reference has unsafe submodules; not parked at $target: $unsafe"
         sayf '  %s reference has submodule work. Not touching it:\n%s\n' "$(c_red FAIL)" "$unsafe"
       elif [ "$dirty" != "0" ] && ! slot_submodule_only_dirt "$s"; then

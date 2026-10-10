@@ -183,6 +183,22 @@ replace_source() {
   printf '%s' "$output" | jq -e '.ok and .data.ok' >/dev/null
 }
 
+@test "unreadable status cannot be treated as phantom dirt during reference sync" {
+  shared_main_layout
+  advance_main
+  printf 'reference_slot: "1"\n' >> "$CONFIG"
+  git() {
+    case "$*" in *"status --porcelain"*) return 1 ;; esac
+    command git "$@"
+  }
+  export -f git
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"unreadable git state"* ]]
+  [ "$(command git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
+  ! command git -C "$ROOT/1_proj" diff --cached --quiet
+}
+
 @test "missing reference creation explains prerequisite and warns about dependent slots" {
   printf 'reference_slot: "0"\n' >> "$CONFIG"
   sed 's/slots: \[1,2\]/slots: [0,1,2]/' "$CONFIG" > "$CONFIG.new"
