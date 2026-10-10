@@ -90,11 +90,12 @@ slot_branch_elsewhere() { # slot_branch_elsewhere <slot>
     | awk -v ref="branch $ref" -v me="$me" '/^worktree /{wt=substr($0,10)} $0==ref && wt!=me {print wt}'
 }
 
-slot_dirty_count() { # slot_dirty_count <slot> -> integer
-  local n
-  n="$(git -C "$(provider_slot_path "$1")" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-  [ -n "$n" ] || n=0
-  printf '%s' "$n"
+slot_dirty_count() { # slot_dirty_count <slot> -> integer, -1 when unreadable
+  local status
+  status="$(git -C "$(provider_slot_path "$1")" status --porcelain 2>/dev/null)" \
+    || { printf '%s' '-1'; return 0; }
+  if [ -z "$status" ]; then printf '0'
+  else printf '%s\n' "$status" | wc -l | tr -d ' '; fi
 }
 
 slot_untracked() { # slot_untracked <slot> -> paths, one per line
@@ -106,10 +107,11 @@ slot_untracked() { # slot_untracked <slot> -> paths, one per line
 # default-branch ref advancing in another worktree. Only a slot left on the
 # default branch can get here; a parked slot shares no ref.
 slot_phantom_base() { # slot_phantom_base <slot>
-  local s="$1" d target head index_tree commit commit_tree
+  local s="$1" d target head index_tree commit commit_tree dirty
   provider_slot_exists "$s" || return 1
   [ "$(slot_current_branch "$s")" = "$AGENTWS_DEFAULT_BRANCH" ] || return 1
-  [ "$(slot_dirty_count "$s")" != "0" ] || return 1
+  dirty="$(slot_dirty_count "$s")"
+  [ "$dirty" != "0" ] && [ "$dirty" != "-1" ] || return 1
   d="$(provider_slot_path "$s")"
 
   [ -z "$(slot_untracked "$s")" ] || return 1
@@ -197,12 +199,12 @@ slot_submodule_unsafe() { # slot_submodule_unsafe <slot> -> refusals, one per li
 # PREDICATE: every difference in this slot is a submodule checkout lagging its
 # gitlink. Nothing untracked, no tracked change outside a gitlink, no edit
 # inside a submodule: drift the recorded gitlinks repair, not work anyone did.
-# Deliberately NOT a fourth slot_dirty_state value; that vocabulary
-# (clean|phantom-dirty|dirty) is a published part of the status JSON.
+# This is still dirt, not a separate slot_dirty_state value.
 slot_submodule_only_dirt() { # slot_submodule_only_dirt <slot>
   local d
   d="$(provider_slot_path "$1")"
   [ -f "$d/.gitmodules" ] || return 1
+  [ "$(slot_dirty_count "$1")" != "-1" ] || return 1
   [ -z "$(slot_untracked "$1")" ] || return 1
   [ -z "$(slot_submodule_untracked "$1")" ] || return 1
   git -C "$d" diff --quiet --ignore-submodules=all -- 2>/dev/null || return 1
@@ -211,8 +213,12 @@ slot_submodule_only_dirt() { # slot_submodule_only_dirt <slot>
   slot_submodule_stale "$1"
 }
 
-slot_dirty_state() { # slot_dirty_state <slot> -> clean|phantom-dirty|dirty
-  if [ "$(slot_dirty_count "$1")" = "0" ]; then
+slot_dirty_state() { # slot_dirty_state <slot> -> clean|phantom-dirty|dirty|broken
+  local dirty
+  dirty="$(slot_dirty_count "$1")"
+  if [ "$dirty" = "-1" ]; then
+    printf 'broken'
+  elif [ "$dirty" = "0" ]; then
     printf 'clean'
   elif slot_phantom_base "$1" >/dev/null; then
     printf 'phantom-dirty'
@@ -319,11 +325,12 @@ slot_merged_gone() { # slot_merged_gone <slot> -> gone|merged, rc 1 if neither
 # reap: a work slot with a stale or no lock, a finished branch, and nothing but
 # submodule lag to lose. dirty: the same, but the tree holds real changes.
 # none: anything else, including every slot someone may be using.
-slot_reap_state() { # slot_reap_state <slot> -> reap|dirty|none
+slot_reap_state() { # slot_reap_state <slot> -> reap|dirty|broken|none
   local s="$1"
   [ "$(slot_role "$s")" = "work" ] || { printf 'none'; return 0; }
   provider_slot_exists "$s" || { printf 'none'; return 0; }
   if [ -f "$(lock_file "$s")" ] && ! lock_is_stale "$s"; then printf 'none'; return 0; fi
+  [ "$(slot_dirty_count "$s")" != "-1" ] || { printf 'broken'; return 0; }
   slot_merged_gone "$s" >/dev/null || { printf 'none'; return 0; }
   if [ "$(slot_dirty_count "$s")" = "0" ] || slot_submodule_only_dirt "$s"; then
     printf 'reap'
@@ -388,6 +395,7 @@ json_slot_obj() { # json_slot_obj <slot>
   [ -z "$up" ] && warns="$(jjoin "$warns" '"no_upstream"')"
   [ "$behind" != "0" ] && warns="$(jjoin "$warns" '"behind_upstream"')"
   [ "$dirty_state" = "phantom-dirty" ] && warns="$(jjoin "$warns" '"phantom_dirty"')"
+  [ "$dirty_state" = "broken" ] && warns="$(jjoin "$warns" '"git_state_unreadable"')"
   [ "$env" != "ready" ] && warns="$(jjoin "$warns" '"environment_not_ready"')"
 
   printf '{"slot":%s,"name":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"warnings":[%s]}' \

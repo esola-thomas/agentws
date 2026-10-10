@@ -45,6 +45,177 @@ setup() {
 
 teardown() { teardown_sandbox; }
 
+replace_source() {
+  mv "$SRC" "$SANDBOX/old-source"
+  git clone -q -b main "$REMOTE" "$SRC"
+}
+
+@test "orphaned slots are broken in status and free, never clean or claimable" {
+  printf 'personal\n' >> "$ROOT/1_proj/file"
+  printf 'untracked\n' > "$ROOT/1_proj/wip"
+  replace_source
+
+  run agentws status --json
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq -e '.data.slots | all(.exists and .dirty == -1 and .dirty_state == "broken" and (.claimable | not) and (.free | not) and (.warnings | index("git_state_unreadable")))' >/dev/null
+  run agentws status
+  [[ "$output" == *broken* ]]
+  run agentws free
+  [[ "$output" == *BROKEN* ]]
+  run agentws free --json
+  printf '%s' "$output" | jq -e '.data.free == [] and .data.claimable == [] and (.data.slots | all(.dirty_state == "broken"))' >/dev/null
+  run agentws claim work
+  [ "$status" -eq 5 ]
+}
+
+@test "doctor fails on orphaned slots and prints the final provider check" {
+  replace_source
+  run agentws doctor 2
+  [ "$status" -eq 8 ]
+  [[ "$output" == *FAIL*common-dir* ]]
+  [[ "$output" == *"worktree admin dir"* ]]
+  [[ "$output" == *"is missing"* ]]
+  [[ "$output" != *"PASS worktree"* ]]
+  run agentws doctor 2 --json
+  [ "$status" -eq 8 ]
+  local json="${lines[${#lines[@]}-1]}"
+  printf '%s' "$json" | jq -e '(.ok | not) and (.data.ok | not) and .error.code == "EGIT" and (.data.slots[0].checks | any(.id == "common-dir" and .status == "fail"))' >/dev/null
+}
+
+@test "orphaned slots cannot be destroyed or recycled without explicit recovery" {
+  printf 'personal\n' >> "$ROOT/1_proj/file"
+  printf 'untracked\n' > "$ROOT/1_proj/wip"
+  replace_source
+  write_lock_default 1 owner=tester
+
+  run agentws free
+  [[ "$output" == *BROKEN*"locked by tester"* ]]
+  run agentws destroy 1 --yes
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unreadable git state"* ]]
+  run agentws recycle 1 --force --clean-untracked
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"unreadable git state"* ]]
+  run agentws refresh 2
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"unreadable git state"* ]]
+  run agentws reap --yes
+  [[ "$output" == *"unreadable git state"* ]]
+  grep -q personal "$ROOT/1_proj/file"
+  [ -f "$ROOT/1_proj/wip" ]
+  [ -f "$(lock_path 1)" ]
+}
+
+@test "forced orphan destroy previews differences and preserves all files before re-create" {
+  printf 'personal\n' >> "$ROOT/1_proj/file"
+  printf 'untracked\n' > "$ROOT/1_proj/wip"
+  replace_source
+  write_lock_default 1 owner=tester
+
+  run agentws destroy 1 --force --yes --dry-run --json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *wip* ]]
+  [ -d "$ROOT/1_proj" ]
+  [ -f "$(lock_path 1)" ]
+  [ "$(find "$ROOT" -maxdepth 1 -name '1_proj.orphaned.*' | wc -l)" -eq 0 ]
+
+  run agentws destroy 1 --force --yes --json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Preserved orphaned files at"* ]]
+  local backup
+  backup="$(find "$ROOT" -maxdepth 1 -name '1_proj.orphaned.*')/checkout"
+  [ -d "$backup" ]
+  grep -q personal "$backup/file"
+  [ -f "$backup/wip" ]
+  [ -f "$backup/.git" ]
+  [ ! -e "$ROOT/1_proj" ]
+  [ ! -f "$(lock_path 1)" ]
+  run agentws create 1 --yes
+  [ "$status" -eq 0 ]
+  parked "$ROOT/1_proj"
+}
+
+@test "forced destroy refuses unreadable slots with surviving administration" {
+  local admin
+  admin="$(sed 's/^gitdir: //' "$ROOT/1_proj/.git")"
+  mv "$admin/HEAD" "$admin/HEAD.saved"
+  run agentws destroy 1 --force --yes
+  [ "$status" -eq 7 ]
+  [ -d "$ROOT/1_proj" ]
+  [[ "$output" == *git*worktree\ repair* ]]
+}
+
+@test "orphan recovery works through a provider wrapping worktree" {
+  mkdir "$SANDBOX/providers"
+  printf '. "$AGENTWS_LIB/providers/worktree.sh"\n' > "$SANDBOX/providers/wrapped.sh"
+  sed 's/provider: worktree/provider: wrapped/' "$CONFIG" > "$CONFIG.new"
+  mv "$CONFIG.new" "$CONFIG"
+  printf 'provider_path: %s\n' "$SANDBOX/providers" >> "$CONFIG"
+  replace_source
+  run agentws doctor 1 --json
+  [ "$status" -eq 8 ]
+  local json="${lines[${#lines[@]}-1]}"
+  printf '%s' "$json" | jq -e '.data.slots[0].checks | any(.id == "common-dir" and .status == "fail")' >/dev/null
+  run agentws destroy 1 --force --yes --json
+  [ "$status" -eq 0 ]
+  json="${lines[${#lines[@]}-1]}"
+  [ -f "$(printf '%s' "$json" | jq -r '.data.preserved_at')/file" ]
+  run agentws create 1
+  [ "$status" -eq 0 ]
+  parked "$ROOT/1_proj"
+}
+
+@test "orphan recovery refuses without an available default-branch snapshot" {
+  replace_source
+  git -C "$SRC" branch -r -d origin/main
+  run agentws destroy 1 --force --yes --json
+  [ "$status" -eq 7 ]
+  [ -d "$ROOT/1_proj" ]
+  [ "$(find "$ROOT" -maxdepth 1 -name '1_proj.orphaned.*' | wc -l)" -eq 0 ]
+}
+
+@test "healthy doctor prints all provider checks and succeeds" {
+  run agentws doctor 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *PASS*common-dir* ]]
+  run agentws doctor 1 --json
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq -e '.ok and .data.ok' >/dev/null
+}
+
+@test "unreadable status cannot be treated as phantom dirt during reference sync" {
+  shared_main_layout
+  advance_main
+  printf 'reference_slot: "1"\n' >> "$CONFIG"
+  git() {
+    case "$*" in *"status --porcelain"*) return 1 ;; esac
+    command git "$@"
+  }
+  export -f git
+  run agentws sync 1
+  [ "$status" -eq 8 ]
+  [[ "$output" == *"unreadable git state"* ]]
+  [ "$(command git -C "$ROOT/1_proj" branch --show-current)" = "main" ]
+  ! command git -C "$ROOT/1_proj" diff --cached --quiet
+}
+
+@test "missing reference creation explains prerequisite and warns about dependent slots" {
+  printf 'reference_slot: "0"\n' >> "$CONFIG"
+  sed 's/slots: \[1,2\]/slots: [0,1,2]/' "$CONFIG" > "$CONFIG.new"
+  mv "$CONFIG.new" "$CONFIG"
+  mv "$SRC" "$ROOT/0_proj"
+  git -C "$ROOT/0_proj" worktree repair "$ROOT/1_proj" "$ROOT/2_proj"
+  sed "s|source_repo: $SRC|source_repo: $ROOT/0_proj|" "$CONFIG" > "$CONFIG.new"
+  mv "$CONFIG.new" "$CONFIG"
+  mv "$ROOT/0_proj" "$SANDBOX/old-source"
+  run agentws create 0
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"reference clone must exist first"* ]]
+  [[ "$output" == *"re-cloning"* ]]
+  [[ "$output" == *"orphan"* ]]
+  [[ "$output" != *"set provider_opts.source_repo"* ]]
+}
+
 advance_main() {
   printf 'new\n' >> "$SRC/file"
   git -C "$SRC" add file

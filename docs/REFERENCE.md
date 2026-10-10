@@ -20,7 +20,7 @@
 | `sync [slot...]` | Fetch and prune in every slot, and park the reference slot detached at `origin/<default>`. It does not update work slots or your branch: `refresh` advances idle slots, and a slot you hold is yours to rebase. Exits non-zero when a fetch fails or the reference is dirty. |
 | `prune [slot...]` | Delete merged local branches. |
 | `create <slot>` / `destroy <slot>` | Make or remove a slot through the provider. |
-| `doctor [slot...]` | Health checks. `--fix-env` provisions environments. |
+| `doctor [slot...]` | Health checks. Exits 8 when any check fails, retaining checks in JSON error data. `--fix-env` provisions environments. |
 | `submodules` | Update submodule pointers in a claimed slot, push, and open a PR. See below. |
 | `config` | The configuration exactly as the parser read it. |
 
@@ -75,6 +75,33 @@ never discards tracked changes. Claims can carry `--task-id`, `--branch`,
 `--agent`, and a `--ttl` capped by `ttl_hours`. `auto_release: true` lets
 `doctor` release a locked slot that stays clean and parked for
 `auto_release_minutes`.
+
+### Broken worktrees
+
+An unreadable checkout is `broken` in status, with `dirty: -1` and the
+`git_state_unreadable` warning in JSON. It is never clean or claimable.
+`doctor <slot>` names a missing worktree admin directory. Replacing the
+reference clone loses that administration, including the slots' indexes and
+any local commits not pushed elsewhere. Restore the original clone if possible.
+If administration still exists, try `git -C <reference> worktree repair <slot-path>`.
+
+For a missing admin directory, a human can use:
+
+```bash
+agentws destroy <slot> --force --yes --dry-run
+agentws destroy <slot> --force --yes
+agentws create <slot> --yes
+```
+
+Forced orphan recovery compares all files with the locally available
+`origin/<default_branch>` archive snapshot (Git export attributes apply), then moves the entire directory into
+`<slot-path>.orphaned.XXXXXX/checkout` and prunes worktree registrations.
+It does not discard files, including ignored files and submodules. The backup
+path is printed and returned as `data.preserved_at` in JSON. Inspect it and
+recover your changes by hand into the new slot; its old `.git` file is still
+broken. `--dry-run` only previews, and recovery refuses if the source clone or
+the default-branch snapshot is unavailable. Ordinary destroy, recycle, refresh,
+and reap do not discard unreadable state. Healthy worktree destruction is unchanged.
 
 ## Providers
 
