@@ -222,3 +222,28 @@ MOCK
   [ "$status" -eq 0 ]
   grep -Fx "0 0 * * * echo other # $marker-extra" "$FAKE_CRON"
 }
+
+@test "hourly interval uses valid native cron and systemd schedules" {
+  printf 'tend_interval_minutes: 60\n' >> "$CONFIG"
+  run schedule install
+  [ "$status" -eq 0 ]
+  grep -q '^0 \* \* \* \* /bin/bash ' "$FAKE_CRON"
+  run schedule uninstall
+  [ "$status" -eq 0 ]
+  export FAKE_BACKEND=systemd
+  run schedule install
+  [ "$status" -eq 0 ]
+  grep -Fx 'OnCalendar=*-*-* *:00:00' "$XDG_CONFIG_HOME/systemd/user/"*.timer
+}
+
+@test "default cron is native and systemd runner has no second jitter" {
+  run schedule install
+  [ "$status" -eq 0 ]
+  grep -q '^\*/15 \* \* \* \* /bin/bash ' "$FAKE_CRON"
+  run schedule uninstall
+  [ "$status" -eq 0 ]
+  export FAKE_BACKEND=systemd
+  run schedule install
+  [ "$status" -eq 0 ]
+  ! grep -q '^sleep ' "$SANDBOX/farm/.agentws/"*.sh
+}

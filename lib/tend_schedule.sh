@@ -43,7 +43,7 @@ tend_schedule_xml() {
 }
 
 tend_schedule_status() {
-  local id name backend installed=0 next="" dir cron last interval
+  local id name backend installed=0 next="" dir cron last interval now
   id="$(tend_schedule_id)" || return 1
   name="agentws-tend@$id"
   backend="$(tend_schedule_field scheduler)"
@@ -63,12 +63,21 @@ tend_schedule_status() {
   esac
   [ "$next" != n/a ] || next=""
   if [ "$installed" -eq 1 ] && [ -z "$next" ]; then
-    last=0
+    last="$(tend_schedule_field installed_at)"
     [ ! -f "$AGENTWS_ROOT/.agentws/$name.last" ] || IFS= read -r last < "$AGENTWS_ROOT/.agentws/$name.last"
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
     interval="${AGENTWS_TEND_INTERVAL_MINUTES:-15}"
-    next="$(awk -v last="$last" -v now="$(date +%s)" -v interval="$interval" \
-      'BEGIN { if (last == 0) print now; else printf "%.0f", last + interval * 60 }')"
+    now="$(date +%s)"
+    if [ "$backend" = cron ] && awk -v interval="$interval" \
+       'BEGIN { exit !(interval <= 60 && 60 % interval == 0) }'; then
+      next="$(awk -v now="$now" -v minute="$(date +%M)" -v second="$(date +%S)" -v interval="$interval" \
+        'BEGIN { printf "%.0f", now-second+(interval-minute%interval)*60 }')"
+    elif [ "$last" -gt 0 ]; then
+      next="$(awk -v last="$last" -v now="$now" -v interval="$interval" \
+        'BEGIN { due=last+interval*60; if (due<now) due=now; printf "%.0f", due }')"
+    else
+      next=""
+    fi
   fi
   printf '{"installed":%s,"scheduler":%s,"next_run":%s}\n' \
     "$(jbool "$installed")" "$([ -n "$backend" ] && jstr "$backend" || printf null)" \
@@ -144,6 +153,7 @@ tend_schedule() {
     if awk -v interval="$AGENTWS_TEND_INTERVAL_MINUTES" \
        'BEGIN { exit !(interval <= 60 && 60 % interval == 0) }'; then
       cadence="*/$AGENTWS_TEND_INTERVAL_MINUTES"; gated=0
+      [ "$AGENTWS_TEND_INTERVAL_MINUTES" -ne 60 ] || cadence=0
     fi
     [ "$backend" != launchd ] || gated=0
     mkdir -p "$state" || return 1
@@ -183,6 +193,7 @@ RUNNER
         } > "$units/$name.service" || return 1
         local calendar="*"
         [ "$gated" -ne 0 ] || calendar="0/$AGENTWS_TEND_INTERVAL_MINUTES"
+        [ "$AGENTWS_TEND_INTERVAL_MINUTES" -ne 60 ] || calendar=00
         printf '# %s\n[Unit]\nDescription=agentws maintenance timer\n[Timer]\nOnCalendar=*-*-* *:%s:00\nPersistent=true\nRandomizedDelaySec=30\n[Install]\nWantedBy=timers.target\n' "$name" "$calendar" > "$units/$name.timer" || return 1
         systemctl --user daemon-reload >&2 && systemctl --user enable --now "$name.timer" >&2 || return 1 ;;
       cron)
@@ -202,7 +213,7 @@ RUNNER
         launchctl bootout "gui/$(id -u)/$name" >/dev/null 2>&1 || true
         launchctl bootstrap "gui/$(id -u)" "$plist" >&2 || return 1 ;;
     esac
-    printf 'installed=1\nscheduler=%s\nid=%s\nconfig=%s\n' "$backend" "$id" "$config" > "$state/tend-schedule" || return 1
+    printf 'installed=1\nscheduler=%s\nid=%s\nconfig=%s\ninstalled_at=%s\n' "$backend" "$id" "$config" "$(date +%s)" > "$state/tend-schedule" || return 1
   else
     case "$backend" in
       systemd)

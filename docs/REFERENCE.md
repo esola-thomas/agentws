@@ -98,8 +98,10 @@ The runner adds up to 30 seconds of jitter outside systemd; systemd uses
 `OnCalendar`, `Persistent=true`, `RandomizedDelaySec=30`, `CPUWeight=10`, and
 `IOWeight=10`. launchd uses low-priority IO and nice 10. The runner records its
 last start under `<root>/.agentws` and captures the installing user's PATH.
-Cron and launchd status estimate the next run from the runner's last start;
-systemd reports its next timer wakeup when available.
+Native cron status estimates the next calendar tick. Other cron and launchd
+schedules estimate the next run from the last start or installation time;
+systemd reports its next timer wakeup when available. Estimates omit jitter
+and sleep recovery; `next_run` is nullable when the timing is unknown.
 The JSON schedule data is `{installed, scheduler, next_run}`. Schedule metadata
 lives at `<root>/.agentws/tend-schedule`, independently of the lock registry.
 No schedule is installed by default.
