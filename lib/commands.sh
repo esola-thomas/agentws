@@ -63,6 +63,9 @@ cmd_status() {
       note="${note:+$note, }$(c_yel "merged/gone: run agentws recycle $s")"
 
     if [ "$dirty_state" = "clean" ]; then dirty_disp="clean"
+    elif [ "$dirty_state" = "broken" ]; then
+      dirty_disp="broken"
+      note="${note:+$note, }unreadable git state; run agentws doctor $s"
     elif [ "$dirty_state" = "phantom-dirty" ]; then dirty_disp="phantom-dirty"
     else dirty_disp="${dirty} files"; fi
     printf '%-16s %-28s %-14s %-8s %-7s %s\n' "$(slot_name "$s")" "$br" "$dirty_disp" "$env" "$ahead" "$note"
@@ -100,7 +103,11 @@ cmd_free() {
     br="$(slot_branch "$s")"
     dirty="$(slot_dirty_count "$s")"
     env="$(slot_env_state "$s")"
-    if lock_active "$s"; then
+    if [ "$dirty" = "-1" ]; then
+      br="unreadable git state; run agentws doctor $s"
+      lock_active "$s" && br="$br; locked by $(lock_read "$s" owner)"
+      printf '%s  %-16s %s\n' "$(c_red BROKEN)" "$(slot_name "$s")" "$br"
+    elif lock_active "$s"; then
       printf '%s  %-16s locked by %s: %s\n' "$(c_red HELD)" "$(slot_name "$s")" \
         "$(lock_read "$s" owner)" "$(lock_read "$s" reason)"
     elif slot_free "$s"; then
@@ -285,6 +292,10 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
     REFRESH_DETAIL="locked by $(lock_read "$s" owner)"
     return 4
   fi
+  if [ "$(slot_dirty_count "$s")" = "-1" ]; then
+    REFRESH_DETAIL="unreadable git state; run agentws doctor $s"
+    return 8
+  fi
   br="$(slot_current_branch "$s")"
   if [ -n "$br" ] && [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ]; then
     REFRESH_DETAIL="on branch $br, not idle"
@@ -316,6 +327,9 @@ _refresh_slot() { # _refresh_slot <slot> <manual|auto>
       REFRESH_DETAIL="git checkout failed"
       return 8
     fi
+  elif [ "$state" = "broken" ]; then
+    REFRESH_DETAIL="unreadable git state; run agentws doctor $s"
+    return 8
   else
     # Phantom dirt, or a submodule checkout lagging its gitlink: both are proven
     # to hold no one's work, and a reset plus the hook repairs both.
@@ -387,6 +401,10 @@ cmd_recycle() {
      ! { [ "${REAP_STALE:-0}" -eq 1 ] && lock_is_stale "$s"; }; then
     printf '%s is held by %s, not you (%s)\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" >&2
     return 4
+  fi
+  if [ "$(slot_dirty_count "$s")" = "-1" ]; then
+    printf '%s has unreadable git state; run agentws doctor %s; lock kept\n' "$(slot_name "$s")" "$s" >&2
+    return 8
   fi
   current="$(slot_current_branch "$s")"
   delete_branch="${CLAIM_BRANCH:-$current}"
@@ -508,6 +526,7 @@ cmd_reap() {
 
   for s in $AGENTWS_SLOTS; do
     [ "$(slot_role "$s")" = "work" ] && provider_slot_exists "$s" || continue
+    [ "$(slot_dirty_count "$s")" != "-1" ] || continue
     run git -C "$(provider_slot_path "$s")" fetch origin --prune --quiet >&2 || true
   done
 
@@ -516,7 +535,10 @@ cmd_reap() {
     [ "$st" = "none" ] && continue
     br="$(slot_branch "$s")"
     why="$(slot_merged_gone "$s")"
-    if [ "$st" = "dirty" ]; then
+    if [ "$st" = "broken" ]; then
+      sayf '  %s %s: unreadable git state, not reaping; run agentws doctor %s\n' "$(c_yel REFUSE)" "$(slot_name "$s")" "$s"
+      recs+=("$(_reap_rec "$s" "$br" "$why" refused "unreadable git state")")
+    elif [ "$st" = "dirty" ]; then
       sayf '  %s %s (%s): %s changed files, not reaping\n' "$(c_yel REFUSE)" "$(slot_name "$s")" "$br" "$(slot_dirty_count "$s")"
       recs+=("$(_reap_rec "$s" "$br" "$why" refused "$(slot_dirty_count "$s") uncommitted files")")
     else
@@ -612,13 +634,17 @@ cmd_sync() {
       st="fail"; SLOT_RESET_DETAIL=""
       # Phantom dirt is the shared default-branch ref moving under the
       # reference, not anyone's work: detach, then reset only this HEAD.
-      if [ -z "$unsafe" ] && [ "$dirty" != "0" ] && slot_phantom_base "$s" >/dev/null && \
+      if [ -z "$unsafe" ] && [ "$dirty" != "0" ] && [ "$dirty" != "-1" ] && \
+         slot_phantom_base "$s" >/dev/null && \
          run git -C "$d" checkout --quiet --detach >&2 && \
          run git -C "$d" reset --hard --quiet "$target" >&2; then
         dirty=0
         sayf '  reset phantom dirt\n'
       fi
-      if [ -n "$unsafe" ]; then
+      if [ "$dirty" = "-1" ]; then
+        detail="reference has unreadable git state; not parked at $target; run agentws doctor $s"
+        sayf '  %s %s\n' "$(c_red FAIL)" "$detail"
+      elif [ -n "$unsafe" ]; then
         detail="reference has unsafe submodules; not parked at $target: $unsafe"
         sayf '  %s reference has submodule work. Not touching it:\n%s\n' "$(c_red FAIL)" "$unsafe"
       elif [ "$dirty" != "0" ] && ! slot_submodule_only_dirt "$s"; then
@@ -830,7 +856,7 @@ cmd_create() {
 # --force. Deletion itself is the provider's job.
 cmd_destroy() {
   [ $# -ge 1 ] || { printf 'destroy needs a slot\n' >&2; return 2; }
-  local slot d rc=0
+  local slot d dirty rc=0
   slot="$(slot_resolve "$1")" || { printf 'unknown slot %s\n' "$1" >&2; return 6; }
   d="$(provider_slot_path "$slot")"
 
@@ -849,13 +875,19 @@ cmd_destroy() {
       "$(slot_name "$slot")" "$(lock_read "$slot" owner)" >&2
     return 4
   fi
-  if [ "$(slot_dirty_count "$slot")" != "0" ] && [ "${FORCE:-0}" -ne 1 ]; then
+  dirty="$(slot_dirty_count "$slot")"
+  if [ "$dirty" = "-1" ] && [ "${FORCE:-0}" -ne 1 ]; then
+    printf '%s has unreadable git state; refusing to destroy it; run agentws doctor %s\n' "$(slot_name "$slot")" "$slot" >&2
+    return 2
+  fi
+  if [ "$dirty" != "0" ] && [ "${FORCE:-0}" -ne 1 ]; then
     printf '%s has uncommitted changes; refusing to destroy it (use --force)\n' \
       "$(slot_name "$slot")" >&2
     return 2
   fi
 
   sayf 'destroying %s\n' "$d"
+  SLOT_DESTROY_BACKUP=""
   if [ "${JSON:-0}" -ne 1 ] && [ "${ASSUME_YES:-0}" -ne 1 ]; then
     confirm "  delete $d?" || { printf '  skipped\n'; return 0; }
   elif [ "${JSON:-0}" -eq 1 ] && [ "${ASSUME_YES:-0}" -ne 1 ] && [ "${DRY:-0}" -ne 1 ]; then
@@ -879,9 +911,10 @@ cmd_destroy() {
   fi
 
   if [ "${JSON:-0}" -eq 1 ]; then
-    printf '{"slot":%s,"name":%s,"path":%s,"destroyed":%s}' \
+    printf '{"slot":%s,"name":%s,"path":%s,"destroyed":%s,"preserved_at":%s}' \
       "$(jstr "$slot")" "$(jstr "$(slot_name "$slot")")" "$(jstr "$d")" \
-      "$(jbool "$(if [ "${DRY:-0}" -eq 1 ]; then echo 0; else echo 1; fi)")"
+      "$(jbool "$(if [ "${DRY:-0}" -eq 1 ]; then echo 0; else echo 1; fi)")" \
+      "$(if [ -n "$SLOT_DESTROY_BACKUP" ]; then jstr "$SLOT_DESTROY_BACKUP"; else printf 'null'; fi)"
   else
     printf '%s destroyed %s\n' "$(c_grn OK)" "$(slot_name "$slot")"
   fi
@@ -950,7 +983,7 @@ _auto_release_check() { # _auto_release_check <slot>
 # line as "status<TAB>..." or "STATUS check detail"; both forms are normalised
 # by _doctor_norm.
 cmd_doctor() {
-  local targets s d ok line recs env_state elsewhere objs=() anybad=0
+  local targets s d ok line rec recs dirty env_state elsewhere objs=() anybad=0
 
   if [ $# -gt 0 ]; then
     targets="$(_cmd_resolve_targets "$@")" || return 6
@@ -989,10 +1022,14 @@ cmd_doctor() {
       recs="$(jjoin "$recs" "$(_doctor_rec upstream warn 'no upstream branch configured')")"
     fi
 
-    if [ "$(slot_dirty_count "$s")" = "0" ]; then
+    dirty="$(slot_dirty_count "$s")"
+    if [ "$dirty" = "-1" ]; then
+      recs="$(jjoin "$recs" "$(_doctor_rec worktree fail 'unreadable git state; changes are unknown')")"
+      ok=0
+    elif [ "$dirty" = "0" ]; then
       recs="$(jjoin "$recs" "$(_doctor_rec worktree pass clean)")"
     else
-      recs="$(jjoin "$recs" "$(_doctor_rec worktree warn "$(slot_dirty_count "$s") uncommitted file(s)")")"
+      recs="$(jjoin "$recs" "$(_doctor_rec worktree warn "$dirty uncommitted file(s)")")"
     fi
 
     if [ "${AGENTWS_AUTO_RELEASE:-0}" -eq 1 ]; then
@@ -1033,8 +1070,9 @@ cmd_doctor() {
     # Provider checks. stderr is left alone so a provider can narrate.
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      recs="$(jjoin "$recs" "$(_doctor_norm "$line")")"
-      case "$line" in FAIL*|*"	fail	"*) ok=0 ;; esac
+      rec="$(_doctor_norm "$line")"
+      recs="$(jjoin "$recs" "$rec")"
+      case "$rec" in *'"status":"fail"'*) ok=0 ;; esac
     done <<EOF
 $(provider_slot_doctor "$s" "$d" 2>/dev/null || true)
 EOF
@@ -1053,6 +1091,10 @@ EOF
     printf '{"ok":%s,"slots":[%s]}' \
       "$(jbool "$(if [ $anybad -eq 0 ]; then echo 1; else echo 0; fi)")" \
       "$(jjoin "${objs[@]+"${objs[@]}"}")"
+  fi
+  if [ "$anybad" -ne 0 ]; then
+    printf 'doctor found failed checks\n' >&2
+    return 8
   fi
   return 0
 }
@@ -1084,7 +1126,7 @@ _doctor_norm() { # _doctor_norm <line>
 _doctor_print() { # _doctor_print <json check array body>
   local id st detail rest="$1"
   # Re-render without jq so the human path keeps jq optional.
-  printf '%s' "$rest" | sed 's/},{/}\n{/g' | while IFS= read -r one; do
+  printf '%s\n' "$rest" | sed 's/},{/}\n{/g' | while IFS= read -r one; do
     [ -n "$one" ] || continue
     id="$(printf '%s' "$one"     | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
     st="$(printf '%s' "$one"     | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"

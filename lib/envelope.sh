@@ -86,7 +86,11 @@ envelope_run() { # envelope_run <command-name> <function> [args...]
   rm -f "$errf"
   [ -n "$msg" ] || msg="$cmd failed with rc $rc"
   code="$(envelope_code_for_rc "$rc")"
-  envelope_emit "$cmd" 0 "" "$code" "$msg"
+  local data=""
+  if [ "$cmd" = "doctor" ]; then
+    case "$out" in '{'*) data="$out" ;; esac
+  fi
+  envelope_emit "$cmd" 0 "$data" "$code" "$msg"
   return "$(envelope_exit_code "$code")"
 }
 
