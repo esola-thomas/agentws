@@ -11,7 +11,7 @@ All notable changes to this project are recorded here. Format follows
 ### Added
 
 - `agentws tend` for safe farm maintenance, with `--check`, `--dry-run`,
-  machine-readable results, and opt-in reap, environment repair, and updates.
+  machine-readable results, and opt-in reap, environment repair, and update checks.
   Session-start hooks show maintenance notices without running maintenance.
 - `agentws tend schedule install|uninstall|status` registers one user job per
   canonical config path: systemd user timers, cron fallback, or launchd on
@@ -21,7 +21,7 @@ All notable changes to this project are recorded here. Format follows
 ### Changed
 
 - Automatic update checks are suppressed for `tend` and `--check`. Maintenance
-  self-updates require `tend_self_update: true`.
+  update checks require `tend_self_update: true`.
 
 ## [0.0.2] - 2026-10-06
 

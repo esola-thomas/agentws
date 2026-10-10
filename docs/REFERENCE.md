@@ -69,7 +69,7 @@ the farm.
 | `tend_refresh` | `true` | Refresh safe idle slots. |
 | `tend_reap` | `false` | Recycle finished stale/unlocked slots, retaining reap's safety checks. |
 | `tend_fix_env` | `false` | Allow provider environment provisioning. |
-| `tend_self_update` | `false` | Allow managed-install self-updates during maintenance. |
+| `tend_self_update` | `false` | Run the managed-install update check during maintenance. |
 
 Booleans accept `true/false`, `yes/no`, or `1/0`. Invalid integers and booleans
 are refused. Configuration JSON includes these five resolved keys.
@@ -90,17 +90,24 @@ remain at that path; uninstall before moving it. The farm must be writable.
 Only generated scheduler files and exactly marked cron entries are removed.
 Paths are shell/systemd/XML-escaped; paths containing newlines are refused.
 
-Schedulers wake once a minute, but an elapsed-time guard runs maintenance only
-after the configured interval. This avoids invalid cron expressions such as
-`*/71`. The runner adds up to 30 seconds of jitter; systemd also uses
+The default schedule wakes every 15 minutes. launchd uses the configured
+interval directly. For minute intervals dividing an hour, cron and systemd
+use native schedules; other intervals use a minute wakeup and elapsed-time
+guard rather than invalid expressions such as `*/71`.
+The runner adds up to 30 seconds of jitter outside systemd; systemd uses
 `OnCalendar`, `Persistent=true`, `RandomizedDelaySec=30`, `CPUWeight=10`, and
 `IOWeight=10`. launchd uses low-priority IO and nice 10. The runner records its
 last start under `<root>/.agentws` and captures the installing user's PATH.
-Cron and launchd status have `next_run: null`; systemd reports its next timer
-wakeup when available, not the elapsed-time guard's next maintenance pass.
+Cron and launchd status estimate the next run from the runner's last start;
+systemd reports its next timer wakeup when available.
 The JSON schedule data is `{installed, scheduler, next_run}`. Schedule metadata
 lives at `<root>/.agentws/tend-schedule`, independently of the lock registry.
 No schedule is installed by default.
+
+The runner uses `nice` and `ionice` when available. A killed lock acquisition
+can leave `<lock_dir>/<slot>.acquire`. Maintenance reports it but never removes
+it. Only after confirming no acquisition is active, a human can recover it with
+`agentws unlock <slot> --force`.
 
 ### Release plan for 0.0.3
 

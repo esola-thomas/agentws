@@ -43,7 +43,7 @@ tend_schedule_xml() {
 }
 
 tend_schedule_status() {
-  local id name backend installed=0 next="" dir cron
+  local id name backend installed=0 next="" dir cron last interval
   id="$(tend_schedule_id)" || return 1
   name="agentws-tend@$id"
   backend="$(tend_schedule_field scheduler)"
@@ -62,6 +62,14 @@ tend_schedule_status() {
       if [ -f "$dir/$name.plist" ] && launchctl list "$name" >/dev/null 2>&1; then installed=1; fi ;;
   esac
   [ "$next" != n/a ] || next=""
+  if [ "$installed" -eq 1 ] && [ -z "$next" ]; then
+    last=0
+    [ ! -f "$AGENTWS_ROOT/.agentws/$name.last" ] || IFS= read -r last < "$AGENTWS_ROOT/.agentws/$name.last"
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    interval="${AGENTWS_TEND_INTERVAL_MINUTES:-15}"
+    next="$(awk -v last="$last" -v now="$(date +%s)" -v interval="$interval" \
+      'BEGIN { if (last == 0) print now; else printf "%.0f", last + interval * 60 }')"
+  fi
   printf '{"installed":%s,"scheduler":%s,"next_run":%s}\n' \
     "$(jbool "$installed")" "$([ -n "$backend" ] && jstr "$backend" || printf null)" \
     "$([ -n "$next" ] && jstr "$next" || printf null)"
@@ -75,7 +83,7 @@ tend_schedule_owned() {
 }
 
 tend_schedule() {
-  local action="${1:-status}" id name backend config state runner units plist cron line f
+  local action="${1:-status}" id name backend config state runner units plist cron line f cadence="*" gated=1
   if [ "$#" -gt 1 ]; then
     printf 'agentws: tend schedule expects exactly one action\n' >&2
     return 2
@@ -133,6 +141,11 @@ tend_schedule() {
     fi
   fi
   if [ "$action" = install ]; then
+    if awk -v interval="$AGENTWS_TEND_INTERVAL_MINUTES" \
+       'BEGIN { exit !(interval <= 60 && 60 % interval == 0) }'; then
+      cadence="*/$AGENTWS_TEND_INTERVAL_MINUTES"; gated=0
+    fi
+    [ "$backend" != launchd ] || gated=0
     mkdir -p "$state" || return 1
     (
       umask 077
@@ -140,17 +153,25 @@ tend_schedule() {
         printf '#!/bin/bash\n# %s\n' "$name"
         printf 'PATH=%s\nexport PATH\n' "$(sq "$PATH")"
         printf 'last=%s\ninterval=%s\n' "$(sq "$state/$name.last")" "$AGENTWS_TEND_INTERVAL_MINUTES"
+        printf 'gated=%s\n' "$gated"
         cat <<'RUNNER'
 now=$(date +%s) || exit 1
 previous=0
 if [ -f "$last" ]; then IFS= read -r previous < "$last"; fi
 case "$previous" in ''|*[!0-9]*) previous=0 ;; esac
-awk -v now="$now" -v previous="$previous" -v interval="$interval" \
-  'BEGIN { exit !(now - previous >= interval * 60) }' || exit 0
+if [ "$gated" -eq 1 ]; then
+  awk -v now="$now" -v previous="$previous" -v interval="$interval" \
+    'BEGIN { exit !(now - previous >= interval * 60) }' || exit 0
+fi
 printf '%s\n' "$now" > "$last" || exit 1
-sleep "$((RANDOM % 31))"
 RUNNER
-        printf 'exec %s --config %s tend --json\n' "$(sq "$AGENTWS_BIN_DIR/agentws")" "$(sq "$config")"
+        [ "$backend" = systemd ] || printf 'sleep "$((RANDOM %% 31))"\n'
+        printf 'set -- %s --config %s tend --json\n' "$(sq "$AGENTWS_BIN_DIR/agentws")" "$(sq "$config")"
+        cat <<'RUNNER'
+if command -v ionice >/dev/null 2>&1; then set -- ionice -c 3 "$@"; fi
+if command -v nice >/dev/null 2>&1; then set -- nice -n 10 "$@"; fi
+exec "$@"
+RUNNER
       } > "$runner"
     ) || return 1
     case "$backend" in
@@ -160,20 +181,23 @@ RUNNER
           printf '# %s\n[Unit]\nDescription=agentws maintenance\n[Service]\nType=oneshot\n' "$name"
           printf 'ExecStart=/bin/bash %s\nCPUWeight=10\nIOWeight=10\n' "$(tend_schedule_systemd_quote "$runner")"
         } > "$units/$name.service" || return 1
-        printf '# %s\n[Unit]\nDescription=agentws maintenance timer\n[Timer]\nOnCalendar=*-*-* *:*:00\nPersistent=true\nRandomizedDelaySec=30\n[Install]\nWantedBy=timers.target\n' "$name" > "$units/$name.timer" || return 1
+        local calendar="*"
+        [ "$gated" -ne 0 ] || calendar="0/$AGENTWS_TEND_INTERVAL_MINUTES"
+        printf '# %s\n[Unit]\nDescription=agentws maintenance timer\n[Timer]\nOnCalendar=*-*-* *:%s:00\nPersistent=true\nRandomizedDelaySec=30\n[Install]\nWantedBy=timers.target\n' "$name" "$calendar" > "$units/$name.timer" || return 1
         systemctl --user daemon-reload >&2 && systemctl --user enable --now "$name.timer" >&2 || return 1 ;;
       cron)
         cron="$(crontab -l 2>/dev/null)" || cron=""
         # Cron processes percent signs even inside shell quotes.
         line="$(printf '/bin/bash %s' "$(sq "$runner")" | sed 's/%/\\%/g')"
-        { printf '%s\n' "$cron" | grep -v " # $name\$" || true; printf '* * * * * %s # %s\n' "$line" "$name"; } | crontab - >&2 || return 1 ;;
+        { printf '%s\n' "$cron" | grep -v " # $name\$" || true; printf '%s * * * * %s # %s\n' "$cadence" "$line" "$name"; } | crontab - >&2 || return 1 ;;
       launchd)
         mkdir -p "$(dirname "$plist")" || return 1
         {
           printf '<?xml version="1.0" encoding="UTF-8"?>\n<!-- %s -->\n<plist version="1.0"><dict>\n' "$name"
           printf '<key>Label</key><string>%s</string>\n' "$name"
           printf '<key>ProgramArguments</key><array><string>/bin/bash</string><string>%s</string></array>\n' "$(tend_schedule_xml "$runner")"
-          printf '<key>StartInterval</key><integer>60</integer>\n<key>RunAtLoad</key><true/>\n<key>LowPriorityIO</key><true/>\n<key>Nice</key><integer>10</integer>\n</dict></plist>\n'
+          printf '<key>StartInterval</key><integer>%s</integer>\n<key>RunAtLoad</key><true/>\n<key>LowPriorityIO</key><true/>\n<key>Nice</key><integer>10</integer>\n</dict></plist>\n' \
+            "$(awk -v interval="$AGENTWS_TEND_INTERVAL_MINUTES" 'BEGIN { printf "%.0f", interval * 60 }')"
         } > "$plist" || return 1
         launchctl bootout "gui/$(id -u)/$name" >/dev/null 2>&1 || true
         launchctl bootstrap "gui/$(id -u)" "$plist" >&2 || return 1 ;;

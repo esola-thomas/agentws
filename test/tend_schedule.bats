@@ -89,7 +89,7 @@ schedule() {
   printf 'tend_interval_minutes: 71\n' >> "$CONFIG"
   run schedule install
   [ "$status" -eq 0 ]
-  printf '%s' "$output" | jq -e '.installed and .scheduler == "cron" and .next_run == null'
+  printf '%s' "$output" | jq -e '.installed and .scheduler == "cron" and (.next_run != null)'
   run schedule install
   [ "$status" -eq 0 ]
   [ "$(grep -c ' # agentws-tend@' "$FAKE_CRON")" -eq 1 ]
@@ -118,10 +118,13 @@ schedule() {
   [ "$status" -eq 0 ]
   printf '%s' "$output" | jq -e '.installed and .scheduler == "systemd" and (.next_run != null)'
   grep -Fx 'Persistent=true' "$XDG_CONFIG_HOME/systemd/user/"*.timer
-  grep -Fx 'OnCalendar=*-*-* *:*:00' "$XDG_CONFIG_HOME/systemd/user/"*.timer
+  grep -Fx 'OnCalendar=*-*-* *:0/15:00' "$XDG_CONFIG_HOME/systemd/user/"*.timer
   grep -Fx 'RandomizedDelaySec=30' "$XDG_CONFIG_HOME/systemd/user/"*.timer
   grep -Fx 'CPUWeight=10' "$XDG_CONFIG_HOME/systemd/user/"*.service
   grep -Fx 'IOWeight=10' "$XDG_CONFIG_HOME/systemd/user/"*.service
+  grep -Fx 'gated=0' "$SANDBOX/farm/.agentws/"*.sh
+  grep -F 'nice -n 10' "$SANDBOX/farm/.agentws/"*.sh
+  grep -F 'ionice -c 3' "$SANDBOX/farm/.agentws/"*.sh
   run schedule uninstall
   [ "$status" -eq 0 ]
   [ ! -e "$FAKE_SYSTEMD" ]
@@ -137,9 +140,18 @@ schedule() {
   [ "$status" -eq 0 ]
   printf '%s' "$output" | jq -e '.installed and .scheduler == "launchd"'
   grep -q 'farm &amp; &lt;quoted&gt;' "$HOME/Library/LaunchAgents/"*.plist
+  grep -q '<key>StartInterval</key><integer>900</integer>' "$HOME/Library/LaunchAgents/"*.plist
   run schedule uninstall
   [ "$status" -eq 0 ]
   [ ! -e "$FAKE_SYSTEMD" ]
+}
+
+@test "default cron uses fifteen minute cadence without an elapsed guard" {
+  run schedule install
+  [ "$status" -eq 0 ]
+  grep -q '^\*/15 \* \* \* \* /bin/bash ' "$FAKE_CRON"
+  grep -Fx 'gated=0' "$SANDBOX/farm/.agentws/"*.sh
+  printf '%s' "$output" | jq -e '.installed and (.next_run != null)'
 }
 
 @test "canonical config symlinks reuse one schedule" {
