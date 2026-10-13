@@ -5,5 +5,6 @@
   "author": {
     "name": "esola-thomas"
   },
-  "homepage": "https://github.com/esola-thomas/agentws"
+  "homepage": "https://github.com/esola-thomas/agentws",
+  "icon": "./icon.png"
 }
