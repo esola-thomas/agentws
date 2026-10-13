@@ -69,6 +69,21 @@ agentws recycle "$AGENTWS_SLOT"                         # after merge: reset and
 Installed a new tool later? Run `agentws setup`. Check the wiring with
 `agentws setup --check`, and undo it with `agentws setup --remove`.
 
+### Claude Code plugin
+
+This repository is also a Claude Code plugin. Add its marketplace and install
+the plugin in Claude Code:
+
+```text
+/plugin marketplace add esola-thomas/agentws
+/plugin install agentws@agentws
+```
+
+The plugin provides `/agentws:init` for an interactive farm setup and
+`/agentws:agentws` for the slot lifecycle. Installing the plugin provides
+skills; run `agentws setup claude` separately to register the MCP server and
+SessionStart hook.
+
 ## Updates
 
 `agentws update` updates now; `agentws version` shows what you run.
