@@ -76,6 +76,24 @@ Installed a new tool later? Run `agentws setup`. Check the wiring with
 `AGENTWS_UPDATE_CHANNEL=main` follows `main` instead of releases. Updates only
 fast-forward and never touch a checkout you cloned yourself.
 
+## Optional maintenance
+
+```bash
+agentws tend --check            # report only; no updates or repairs
+agentws tend --dry-run          # preview maintenance
+agentws tend                    # run safe maintenance now
+agentws tend schedule install   # user timer, cron fallback, or launchd
+agentws tend schedule status
+agentws tend schedule uninstall
+```
+
+The default interval is 15 minutes. Refresh is enabled; reaping finished slots,
+environment provisioning, and self-updates require explicit config opt-ins.
+For one pass, `--no-refresh`, `--reap` / `--no-reap`, `--fix-env` /
+`--no-fix-env`, and `--self-update` / `--no-self-update` override config.
+Active locks and real uncommitted changes are never overridden. No daemon or
+provider lock access is added. See [the reference](docs/REFERENCE.md#maintenance).
+
 ## Learn more
 
 - [AGENTS.md](AGENTS.md): the contract agents follow

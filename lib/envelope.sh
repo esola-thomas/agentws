@@ -87,7 +87,7 @@ envelope_run() { # envelope_run <command-name> <function> [args...]
   [ -n "$msg" ] || msg="$cmd failed with rc $rc"
   code="$(envelope_code_for_rc "$rc")"
   local data=""
-  if [ "$cmd" = "doctor" ]; then
+  if [ "$cmd" = "doctor" ] || [ "$cmd" = "tend" ]; then
     case "$out" in '{'*) data="$out" ;; esac
   fi
   envelope_emit "$cmd" 0 "$data" "$code" "$msg"

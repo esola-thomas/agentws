@@ -110,6 +110,7 @@ cmd_hook() {
   case "${1:-}" in
     session-start)
       local out
+      ( config_load && provider_load && tend_notice ) 2>/dev/null || true
       out="$("$AGENTWS_BIN_DIR/agentws" free 2>/dev/null)" || return 0
       [ -n "$out" ] || return 0
       printf 'agentws farm (claim a slot before any checkout of the farmed repo; see the agentws skill):\n%s\n' "$out"

@@ -24,6 +24,8 @@
 #   agentws create <slot>          create a slot; --with-env provisions its environment
 #   agentws destroy <slot>         remove a slot via the provider
 #   agentws doctor [slot...]       health checks, core plus provider
+#   agentws tend                   safe maintenance; --check reports without changes
+#   agentws tend schedule <action> install, uninstall, or status of user scheduling
 #   agentws submodules             update submodule pointers in a slot, push, open a PR
 #                                  (--yes all candidates, --push no final prompt,
 #                                   --dry-run preview, --base B)
@@ -121,6 +123,10 @@ CLAIM_AGENT=""
 . "$AGENTWS_LIB_DIR/setup.sh"
 # shellcheck source=../lib/submodules.sh
 . "$AGENTWS_LIB_DIR/submodules.sh"
+# shellcheck source=../lib/tend_schedule.sh
+. "$AGENTWS_LIB_DIR/tend_schedule.sh"
+# shellcheck source=../lib/tend.sh
+. "$AGENTWS_LIB_DIR/tend.sh"
 
 OWNER="${AGENTWS_OWNER:-${WSCTL_OWNER:-${USER}@$(hostname -s 2>/dev/null || echo host):$$}}"
 TTL_OVERRIDE="${AGENTWS_TTL:-${WSCTL_TTL:-}}"
@@ -156,7 +162,12 @@ done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 [ "${SHOW_VERSION:-0}" -eq 1 ] && set -- version
 
-[ "${1:-}" = update ] || update_maybe_background
+NO_BACKGROUND_UPDATE=0
+for ARG in "$@"; do
+  [ "$ARG" != --check ] || NO_BACKGROUND_UPDATE=1
+done
+case "${1:-}" in update|tend) NO_BACKGROUND_UPDATE=1 ;; esac
+[ "$NO_BACKGROUND_UPDATE" -eq 1 ] || update_maybe_background
 
 # These run before config_load, which exits 3 when no config exists.
 case "${1:-}" in
@@ -192,6 +203,7 @@ case "$CMD" in
   create)   envelope_run create  cmd_create  "$@" ;;
   destroy)  envelope_run destroy cmd_destroy "$@" ;;
   doctor)   envelope_run doctor  cmd_doctor  "$@" ;;
+  tend)     envelope_run tend    cmd_tend    "$@" ;;
   submodules) envelope_run submodules cmd_submodules "$@" ;;
   locks)    envelope_run locks   cmd_locks   "$@" ;;
   config)   envelope_run config  cmd_config  "$@" ;;

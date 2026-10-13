@@ -98,6 +98,7 @@ config_parse() { # config_parse <file>
   local r_version="" r_root="" r_top="" r_provider="" r_default_branch=""
   local r_slots="" r_fmt="" r_ref="" r_excl="" r_ttl="" r_lockdir="" r_provider_path=""
   local r_auto_refresh="" r_auto_release="" r_auto_release_minutes=""
+  local r_tend_interval="" r_tend_refresh="" r_tend_reap="" r_tend_fix_env="" r_tend_self_update=""
 
   while IFS= read -r raw || [ -n "$raw" ]; do
     n=$((n + 1))
@@ -162,6 +163,10 @@ config_parse() { # config_parse <file>
 
     in_opts=0
     case "$key" in
+      tend_interval_minutes|tend_refresh|tend_reap|tend_fix_env|tend_self_update)
+        [ -n "$(config_scalar "$val")" ] || die_at "$f" "$n" "$key must not be empty" ;;
+    esac
+    case "$key" in
       version)            r_version="$(config_scalar "$val")" ;;
       root)               r_root="$(config_scalar "$val")" ;;
       top)                r_top="$(config_scalar "$val")" ;;
@@ -174,6 +179,11 @@ config_parse() { # config_parse <file>
       auto_refresh)       r_auto_refresh="$(config_scalar "$val")" ;;
       auto_release)       r_auto_release="$(config_scalar "$val")" ;;
       auto_release_minutes) r_auto_release_minutes="$(config_scalar "$val")" ;;
+      tend_interval_minutes) r_tend_interval="$(config_scalar "$val")" ;;
+      tend_refresh)        r_tend_refresh="$(config_scalar "$val")" ;;
+      tend_reap)           r_tend_reap="$(config_scalar "$val")" ;;
+      tend_fix_env)        r_tend_fix_env="$(config_scalar "$val")" ;;
+      tend_self_update)    r_tend_self_update="$(config_scalar "$val")" ;;
       lock_dir)           r_lockdir="$(config_scalar "$val")" ;;
       slots)
         if [ -n "$dval" ]; then
@@ -218,6 +228,11 @@ config_parse() { # config_parse <file>
   AGENTWS_AUTO_REFRESH="$(config_bool "${r_auto_refresh:-false}" auto_refresh "$f")"
   AGENTWS_AUTO_RELEASE="$(config_bool "${r_auto_release:-false}" auto_release "$f")"
   AGENTWS_AUTO_RELEASE_MINUTES="${r_auto_release_minutes:-30}"
+  AGENTWS_TEND_INTERVAL_MINUTES="${r_tend_interval:-15}"
+  AGENTWS_TEND_REFRESH="$(config_bool "${r_tend_refresh:-true}" tend_refresh "$f")" || exit $?
+  AGENTWS_TEND_REAP="$(config_bool "${r_tend_reap:-false}" tend_reap "$f")" || exit $?
+  AGENTWS_TEND_FIX_ENV="$(config_bool "${r_tend_fix_env:-false}" tend_fix_env "$f")" || exit $?
+  AGENTWS_TEND_SELF_UPDATE="$(config_bool "${r_tend_self_update:-false}" tend_self_update "$f")" || exit $?
   AGENTWS_SLOTS="$(printf '%s' "$r_slots" | sed -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//')"
   AGENTWS_EXCLUDE_FROM_CLAIM="$(printf '%s' "$r_excl" | sed -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//')"
 
@@ -227,6 +242,11 @@ config_parse() { # config_parse <file>
   case "$AGENTWS_AUTO_RELEASE_MINUTES" in
     ''|*[!0-9]*) die "$f: auto_release_minutes must be a non-negative integer, got '$AGENTWS_AUTO_RELEASE_MINUTES'" ;;
   esac
+  case "$AGENTWS_TEND_INTERVAL_MINUTES" in
+    ''|*[!0-9]*) die "$f: tend_interval_minutes must be a positive integer, got '$AGENTWS_TEND_INTERVAL_MINUTES'" ;;
+  esac
+  AGENTWS_TEND_INTERVAL_MINUTES="$(printf '%s' "$AGENTWS_TEND_INTERVAL_MINUTES" | sed 's/^0*//')"
+  [ -n "$AGENTWS_TEND_INTERVAL_MINUTES" ] || die "$f: tend_interval_minutes must be positive"
 
   AGENTWS_ROOT="$(config_canon "$(config_expand "$r_root")")"
   AGENTWS_LOCK_DIR="$(config_canon "$(config_expand "${r_lockdir:-{root\}/.agentws/locks}")")"
@@ -329,6 +349,11 @@ cmd_config() {
     printf 'auto_refresh         %s\n' "$AGENTWS_AUTO_REFRESH"
     printf 'auto_release         %s\n' "$AGENTWS_AUTO_RELEASE"
     printf 'auto_release_minutes %s\n' "$AGENTWS_AUTO_RELEASE_MINUTES"
+    printf 'tend_interval_minutes %s\n' "$AGENTWS_TEND_INTERVAL_MINUTES"
+    printf 'tend_refresh         %s\n' "$AGENTWS_TEND_REFRESH"
+    printf 'tend_reap            %s\n' "$AGENTWS_TEND_REAP"
+    printf 'tend_fix_env         %s\n' "$AGENTWS_TEND_FIX_ENV"
+    printf 'tend_self_update     %s\n' "$AGENTWS_TEND_SELF_UPDATE"
     printf 'lock_dir             %s\n' "$AGENTWS_LOCK_DIR"
     local k
     for k in $AGENTWS_P_KEYS; do
@@ -342,13 +367,15 @@ cmd_config() {
   for k in $AGENTWS_P_KEYS; do
     parts+=("$(eval "printf '%s:%s' \"\$(jstr \"\$k\")\" \"\$(jstr \"\$AGENTWS_P_${k}\")\"")")
   done
-  printf '{"config_file":%s,"version":1,"root":%s,"top":%s,"provider":%s,"provider_path":%s,"default_branch":%s,"slots":[%s],"slot_name_format":%s,"reference_slot":%s,"exclude_from_claim":[%s],"ttl_hours":%s,"auto_refresh":%s,"auto_release":%s,"auto_release_minutes":%s,"lock_dir":%s,"provider_opts":{%s}}\n' \
+  printf '{"config_file":%s,"version":1,"root":%s,"top":%s,"provider":%s,"provider_path":%s,"default_branch":%s,"slots":[%s],"slot_name_format":%s,"reference_slot":%s,"exclude_from_claim":[%s],"ttl_hours":%s,"auto_refresh":%s,"auto_release":%s,"auto_release_minutes":%s,"tend_interval_minutes":%s,"tend_refresh":%s,"tend_reap":%s,"tend_fix_env":%s,"tend_self_update":%s,"lock_dir":%s,"provider_opts":{%s}}\n' \
     "$(jstr "$AGENTWS_CONFIG_FILE")" "$(jstr "$AGENTWS_ROOT")" "$(jstr "$AGENTWS_TOP")" \
     "$(jstr "$AGENTWS_PROVIDER")" "$(jstr "$AGENTWS_CONFIG_PROVIDER_PATH")" "$(jstr "$AGENTWS_DEFAULT_BRANCH")" \
     "$(jjoin "${sl[@]+"${sl[@]}"}")" "$(jstr "$AGENTWS_SLOT_NAME_FORMAT")" \
     "$(jstr "$AGENTWS_REFERENCE_SLOT")" "$(jjoin "${ex[@]+"${ex[@]}"}")" \
     "$(jnum "$AGENTWS_TTL_HOURS")" "$(jbool "$AGENTWS_AUTO_REFRESH")" \
     "$(jbool "$AGENTWS_AUTO_RELEASE")" "$(jnum "$AGENTWS_AUTO_RELEASE_MINUTES")" \
+    "$AGENTWS_TEND_INTERVAL_MINUTES" "$(jbool "$AGENTWS_TEND_REFRESH")" \
+    "$(jbool "$AGENTWS_TEND_REAP")" "$(jbool "$AGENTWS_TEND_FIX_ENV")" "$(jbool "$AGENTWS_TEND_SELF_UPDATE")" \
     "$(jstr "$AGENTWS_LOCK_DIR")" \
     "$(jjoin "${parts[@]+"${parts[@]}"}")"
 }
