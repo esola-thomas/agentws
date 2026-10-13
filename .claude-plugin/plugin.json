@@ -1,0 +1,9 @@
+{
+  "name": "agentws",
+  "version": "0.0.3",
+  "description": "Isolated workspaces for parallel AI coding agents.",
+  "author": {
+    "name": "esola-thomas"
+  },
+  "homepage": "https://github.com/esola-thomas/agentws"
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agentws",
+  "description": "Plugins for isolated AI coding workspaces.",
+  "owner": {
+    "name": "esola-thomas"
+  },
+  "plugins": [
+    {
+      "name": "agentws",
+      "source": ".",
+      "description": "Isolated workspaces for parallel AI coding agents.",
+      "version": "0.0.3",
+      "author": {
+        "name": "esola-thomas"
+      },
+      "homepage": "https://github.com/esola-thomas/agentws"
+    }
+  ]
+}
