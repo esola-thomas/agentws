@@ -1,9 +1,14 @@
 {
   "name": "agentws",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Isolated workspaces for parallel AI coding agents.",
   "author": {
     "name": "esola-thomas"
   },
-  "homepage": "https://github.com/esola-thomas/agentws"
+  "homepage": "https://github.com/esola-thomas/agentws",
+  "repository": "https://github.com/esola-thomas/agentws",
+  "license": "MIT",
+  "keywords": ["git", "worktree", "parallel-agents", "workspaces", "isolation"],
+  "icon": "./icon.png",
+  "supportUrl": "https://github.com/esola-thomas/agentws/issues"
 }

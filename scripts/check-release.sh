@@ -9,6 +9,8 @@
 #   "## [Unreleased]") is "## [VERSION] - YYYY-MM-DD" and its section is not empty.
 #   With a tag: the tag is exactly "v" + VERSION, so a prerelease tag needs a
 #   prerelease VERSION and the other way round.
+#   When claude-plugin/.claude-plugin/plugin.json exists, its version and the
+#   agentws entry in .claude-plugin/marketplace.json both equal VERSION.
 # --notes prints that section's body on stdout once every check passes.
 # AGENTWS_RELEASE_ROOT overrides the repository root (used by the tests).
 
@@ -63,6 +65,21 @@ esac
 printf '%s\n' "$FIRST" | grep -Eq '^## \[[^]]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$' \
   || die "CHANGELOG.md heading '$FIRST' must end in a YYYY-MM-DD date"
 [ -n "$(printf '%s' "$BODY" | tr -d '[:space:]')" ] || die "CHANGELOG.md section for $VERSION is empty"
+
+# The Claude plugin is versioned with the CLI: the plugin directory serves a
+# stale copy when its manifest version does not move with the release.
+PLUGIN="$ROOT/claude-plugin/.claude-plugin/plugin.json"
+MARKET="$ROOT/.claude-plugin/marketplace.json"
+if [ -f "$PLUGIN" ]; then
+  command -v jq >/dev/null 2>&1 || die "jq is required to check the plugin manifest version"
+  PV="$(jq -r '.version // ""' "$PLUGIN" 2>/dev/null)" || die "claude-plugin/.claude-plugin/plugin.json is not valid JSON"
+  [ "$PV" = "$VERSION" ] || die "claude-plugin/.claude-plugin/plugin.json version '$PV' does not match VERSION '$VERSION'"
+  if [ -f "$MARKET" ]; then
+    MV="$(jq -r '[.plugins[]? | select(.name == "agentws") | .version // ""] | first // ""' "$MARKET" 2>/dev/null)" \
+      || die ".claude-plugin/marketplace.json is not valid JSON"
+    [ "$MV" = "$VERSION" ] || die ".claude-plugin/marketplace.json agentws version '$MV' does not match VERSION '$VERSION'"
+  fi
+fi
 
 if [ -n "$TAG" ]; then
   case "$TAG" in
