@@ -5,9 +5,14 @@ description: Claim, bootstrap, use, and recycle an isolated agentws slot for any
 
 # agentws slot lifecycle
 
-One slot = one task = one lock. If anything below is unclear, `AGENTS.md` at the
-root of the agentws install (`../../AGENTS.md` from this file) is the full
+One slot = one task = one lock. If anything below is unclear, `AGENTS.md` in
+the agentws repository
+(<https://github.com/esola-thomas/agentws/blob/main/AGENTS.md>) is the full
 contract.
+
+This skill drives the `agentws` CLI. If `agentws status` is not found, the CLI
+is not installed: say so, point to `/agentws:init`, and use plain git. Do not
+install it unasked.
 
 ## Am I an orchestrator or a worker?
 

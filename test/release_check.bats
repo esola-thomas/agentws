@@ -194,6 +194,34 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+plugin_fixture() { # plugin_fixture <plugin version> <marketplace version>
+  mkdir -p "$AGENTWS_RELEASE_ROOT/claude-plugin/.claude-plugin" "$AGENTWS_RELEASE_ROOT/.claude-plugin"
+  printf '{"name":"agentws","version":"%s"}\n' "$1" \
+    > "$AGENTWS_RELEASE_ROOT/claude-plugin/.claude-plugin/plugin.json"
+  printf '{"name":"agentws","plugins":[{"name":"agentws","source":"./claude-plugin","version":"%s"}]}\n' "$2" \
+    > "$AGENTWS_RELEASE_ROOT/.claude-plugin/marketplace.json"
+}
+
+@test "plugin manifest and marketplace versions matching VERSION pass" {
+  plugin_fixture 1.2.3 1.2.3
+  run "$CHECK" v1.2.3
+  [ "$status" -eq 0 ]
+}
+
+@test "a plugin manifest version behind VERSION fails" {
+  plugin_fixture 1.2.2 1.2.3
+  run "$CHECK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"plugin.json version '1.2.2' does not match VERSION '1.2.3'"* ]]
+}
+
+@test "a marketplace entry version behind VERSION fails" {
+  plugin_fixture 1.2.3 1.2.2
+  run "$CHECK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"marketplace.json agentws version '1.2.2' does not match VERSION '1.2.3'"* ]]
+}
+
 @test "the repository's own VERSION and CHANGELOG agree" {
   unset AGENTWS_RELEASE_ROOT
   run "$CHECK" "v$(cat "$AGENTWS_REPO_ROOT/VERSION")"

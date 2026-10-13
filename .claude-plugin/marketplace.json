@@ -10,7 +10,7 @@
       "name": "agentws",
       "source": "./claude-plugin",
       "description": "Isolated workspaces for parallel AI coding agents.",
-      "version": "0.0.3",
+      "version": "0.0.4",
       "author": {
         "name": "esola-thomas"
       },

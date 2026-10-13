@@ -6,6 +6,22 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-10-13
+
+### Added
+
+- The Claude plugin is ready for Anthropic's plugin directory: its folder now
+  carries its own README (what the skills run, fetch, send, and store), the MIT
+  license, and a listing icon, and the manifest declares `license`,
+  `repository`, `keywords`, `icon`, and `supportUrl`.
+
+### Changed
+
+- `scripts/check-release.sh` fails when the plugin manifest or the marketplace
+  entry version differs from `VERSION`.
+- The `agentws` skill links the contract by URL instead of a path outside the
+  plugin, and tells the agent what to do when the CLI is not installed.
+
 ## [0.0.3] - 2026-10-10
 
 ### Added

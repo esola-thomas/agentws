@@ -126,7 +126,9 @@ BATS_SHELL=/bin/bash bats test/
 Managed installs follow the newest `v*` tag, and every install picks a new one
 up within a day. To release `X.Y.Z`:
 
-1. In a PR, bump `VERSION` to `X.Y.Z` and move the changelog's Unreleased
+1. In a PR, bump `VERSION` to `X.Y.Z`, set the same version in
+   `claude-plugin/.claude-plugin/plugin.json` and the `agentws` entry of
+   `.claude-plugin/marketplace.json`, and move the changelog's Unreleased
    entries under a new `## [X.Y.Z] - YYYY-MM-DD` heading. CI runs
    `scripts/check-release.sh` on every PR and push to main.
 2. Merge the PR.
@@ -141,7 +143,8 @@ up within a day. To release `X.Y.Z`:
 
 The check rules: `VERSION` is one line of semver `X.Y.Z` (optionally
 `-prerelease`), the first versioned changelog heading after `## [Unreleased]`
-is `## [X.Y.Z] - YYYY-MM-DD` with a non-empty section, and the tag is exactly
+is `## [X.Y.Z] - YYYY-MM-DD` with a non-empty section, the plugin manifest and
+marketplace entry carry the same version, and the tag is exactly
 `v` + `VERSION`. The workflow fails without publishing when the check fails,
 but it cannot un-push a bad tag: installs may already be updating to it. Step 3
 is the gate that matters.
