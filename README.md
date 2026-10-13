@@ -81,8 +81,8 @@ the plugin in Claude Code:
 
 The plugin provides `/agentws:init` for an interactive farm setup and
 `/agentws:agentws` for the slot lifecycle. Installing the plugin provides
-skills; run `agentws setup claude` separately to register the MCP server and
-SessionStart hook.
+skills; its package contains no CLI executables. Install the CLI separately,
+then run `agentws setup claude` to register the MCP server and SessionStart hook.
 
 ## Updates
 
