@@ -21,6 +21,8 @@
 | `prune [slot...]` | Delete merged local branches. |
 | `create <slot>` / `destroy <slot>` | Make or remove a slot through the provider. |
 | `doctor [slot...]` | Health checks. Exits 8 when any check fails, retaining checks in JSON error data. `--fix-env` provisions environments. |
+| `tend [--check] [--dry-run]` | Run farm maintenance. Check mode reports only; dry-run previews changes. |
+| `tend schedule install\|uninstall\|status` | Register, remove, or inspect this config's user schedule. Supports `--dry-run`, `--json`. |
 | `submodules` | Update submodule pointers in a claimed slot, push, and open a PR. See below. |
 | `config` | The configuration exactly as the parser read it. |
 
@@ -52,6 +54,73 @@ Discovery order, first hit wins:
 Every key is documented in [.agentws.yml.example](../.agentws.yml.example). The
 parser accepts a strict subset of YAML and refuses anything else with a
 `file:line` error; a key is never silently dropped.
+
+## Maintenance
+
+`tend` preserves the existing lock and cleanliness checks. It never forces a
+busy slot, discards real changes, or lets providers access locks. `--check`
+does not repair, reap, provision, or update. `--dry-run` previews mutations.
+Session-start hooks only display a maintenance notice; they do not maintain
+the farm.
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `tend_interval_minutes` | `15` | Positive integer between maintenance runs, including intervals over 59 minutes. |
+| `tend_refresh` | `true` | Refresh safe idle slots. |
+| `tend_reap` | `false` | Recycle finished stale/unlocked slots, retaining reap's safety checks. |
+| `tend_fix_env` | `false` | Allow provider environment provisioning. |
+| `tend_self_update` | `false` | Run the managed-install update check during maintenance. |
+
+Booleans accept `true/false`, `yes/no`, or `1/0`. Invalid integers and booleans
+are refused. Configuration JSON includes these five resolved keys.
+Background auto-updates are suppressed for `tend` and commands using `--check`.
+
+For one run, `--refresh` / `--no-refresh`, `--reap` / `--no-reap`,
+`--fix-env` / `--no-fix-env`, and `--self-update` / `--no-self-update`
+override the corresponding config switches. `--check` and `--dry-run` still
+prevent mutations regardless of these overrides. `tend --install` and
+`tend --uninstall` are schedule aliases; `tend --status` reports the schedule
+and the last maintenance result.
+
+`tend schedule install` chooses a systemd user timer on Linux when the user
+manager is available, otherwise cron; macOS uses launchd. A checksum of the
+canonical config path names `agentws-tend@<id>`, so symlink aliases reuse one
+job and different farms do not replace each other's jobs. The config must
+remain at that path; uninstall before moving it. The farm must be writable.
+Only generated scheduler files and exactly marked cron entries are removed.
+Paths are shell/systemd/XML-escaped; paths containing newlines are refused.
+
+The default schedule wakes every 15 minutes. launchd uses the configured
+interval directly. For minute intervals dividing an hour, cron and systemd
+use native calendar schedules. Other cron intervals use a minute wakeup and
+elapsed-time guard rather than invalid expressions such as `*/71`; systemd
+uses a native monotonic timer for these intervals. Native schedules never
+apply the elapsed-time guard, so jitter cannot cause skipped ticks.
+The runner adds up to 30 seconds of jitter outside systemd; systemd uses
+`OnCalendar`, `Persistent=true`, `RandomizedDelaySec=30`, `CPUWeight=10`, and
+`IOWeight=10`. launchd uses low-priority IO and nice 10. The runner records its
+last start under `<root>/.agentws` and captures the installing user's PATH.
+Native cron status estimates the next calendar tick. Other cron and launchd
+schedules estimate the next run from the last start or installation time;
+systemd reports its next timer wakeup when available. Estimates omit jitter
+and sleep recovery; `next_run` is nullable when the timing is unknown.
+Systemd's persistent catch-up applies to calendar timers, not monotonic ones.
+The JSON schedule data is `{installed, scheduler, next_run}`. Schedule metadata
+lives at `<root>/.agentws/tend-schedule`, independently of the lock registry.
+No schedule is installed by default.
+
+The runner uses `nice` and `ionice` when available. A killed lock acquisition
+can leave `<lock_dir>/<slot>.acquire`. Maintenance reports it but never removes
+it. Only after confirming no acquisition is active, a human can recover it with
+`agentws unlock <slot> --force`.
+
+### Release plan for 0.0.3
+
+Merge the maintenance changes with `VERSION` and the dated changelog section,
+then run `scripts/check-release.sh v0.0.3` on the merge commit. An administrator
+tags that commit `v0.0.3` and pushes only that tag; the existing release workflow
+publishes its notes. Never move a published tag. Smoke-test `tend --check` and
+schedule install/status/uninstall on Linux and macOS before publishing.
 
 ## Slot lifecycle
 

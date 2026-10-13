@@ -85,6 +85,21 @@ setup() {
 
 teardown() { teardown_sandbox; }
 
+@test "tend repairs only pure reference submodule lag" {
+  printf '\nreference_slot: 1\n' >> "$CONFIG"
+  git -C "$ROOT/1_proj/sub" checkout -q "$SUB_B"
+  run agentws tend --json
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_A" ]
+  [ -z "$(git -C "$ROOT/1_proj" status --porcelain)" ]
+  git -C "$ROOT/1_proj/sub" checkout -q "$SUB_B"
+  printf 'keep\n' >> "$ROOT/1_proj/sub/f"
+  run agentws tend --json
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$ROOT/1_proj/sub" rev-parse HEAD)" = "$SUB_B" ]
+  grep -q keep "$ROOT/1_proj/sub/f"
+}
+
 # Put the slot in the state the issue describes: on a task branch whose gitlink
 # is SUB_B while origin/main still pins SUB_A. The slot is CLEAN here, which is
 # why the old recycle sailed through its gates.
