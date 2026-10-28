@@ -45,3 +45,12 @@ load helper
   run grep -rn -F '../' "$p/skills"
   [ "$status" -ne 0 ]
 }
+
+@test "Claude plugin skills leave remote CLI installation to the user" {
+  local skills="$AGENTWS_REPO_ROOT/claude-plugin/skills"
+
+  grep -q 'Do not run a remote installer' "$skills/agentws/SKILL.md"
+  grep -q 'Do not run a remote installer' "$skills/init/SKILL.md"
+  run grep -RniE '(curl|wget)[^|]*[|][[:space:]]*(bash|sh)' "$skills"
+  [ "$status" -ne 0 ]
+}
