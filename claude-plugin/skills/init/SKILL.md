@@ -33,8 +33,9 @@ to configure and verify access themselves; never request or store tokens.
 
 Check whether `agentws` is installed and whether this repository already has an
 `.agentws.yml` or an existing farm. Do not overwrite an existing config or use
-`--force` as a shortcut. If the CLI is missing, explain the documented install
-command from the project README and ask before installing it.
+`--force` as a shortcut. If the CLI is missing, tell the developer to install it
+separately using the project README, then stop. Do not run a remote installer
+from this skill.
 
 ## 2. Choose a workspace layout
 

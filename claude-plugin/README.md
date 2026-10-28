@@ -39,11 +39,10 @@ not from this plugin.
   your local shell, inside the repository and slot farm you point it at. The
   `init` skill inspects the repository read-only first and asks before it
   creates directories, writes config, or initializes submodules.
-- **Fetches.** If the CLI is missing, the `init` skill shows the install
-  command above and asks before running it. That command downloads the
-  installer and clones the CLI from `github.com/esola-thomas/agentws`. Once
-  installed, the CLI checks that same repository for a new release at most
-  once a day; `AGENTWS_NO_AUTO_UPDATE=1` turns that off.
+- **Fetches.** The skills do not fetch or install the CLI. If it is missing,
+  the `init` skill points you to the project README; installation is left to
+  you. Once installed, the CLI checks `github.com/esola-thomas/agentws` for a
+  new release at most once a day; `AGENTWS_NO_AUTO_UPDATE=1` turns that off.
 - **Sends.** Nothing goes to the plugin author or to any service the plugin
   operates, because there is none. The only network traffic is git: fetches
   from and pushes to the remotes already configured in your own repository,

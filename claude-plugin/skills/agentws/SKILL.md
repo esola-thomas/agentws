@@ -11,8 +11,8 @@ the agentws repository
 contract.
 
 This skill drives the `agentws` CLI. If `agentws status` is not found, the CLI
-is not installed: say so, point to `/agentws:init`, and use plain git. Do not
-install it unasked.
+is not installed: say so and point to `/agentws:init`. Do not run a remote installer
+from this skill; tell the developer to install the CLI separately and use plain git.
 
 ## Am I an orchestrator or a worker?
 

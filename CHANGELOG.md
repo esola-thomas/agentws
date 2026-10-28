@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-10-28
+
+### Changed
+
+- Claude skills direct users to install the CLI separately instead of running
+  the remote installer from a skill.
+
 ## [0.0.4] - 2026-10-13
 
 ### Added
