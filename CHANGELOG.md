@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-10-28
+
+### Changed
+
+- The Claude plugin's listing icon is now a vector `icon.svg` instead of a
+  PNG, so the plugin ships no binary files for the directory to hold for review.
+
 ## [0.0.5] - 2026-10-28
 
 ### Changed
