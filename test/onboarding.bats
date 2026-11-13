@@ -146,6 +146,11 @@ stub() { # stub <name>: a CLI that appends its argv to $SANDBOX/<name>.log
 }
 
 @test "setup detects a harness by its command, not its config dir" {
+  # The test PATH keeps /usr/bin and /bin, so a host-wide harness install
+  # would be detected and break the premise.
+  for h in claude codex; do
+    [ ! -e "/usr/bin/$h" ] && [ ! -e "/bin/$h" ] || skip "$h is installed in /usr/bin or /bin on this host"
+  done
   stub gemini
   mkdir -p "$HOME/.codex" "$HOME/.copilot" "$HOME/.claude"
   PATH="$STUBS:/usr/bin:/bin" run agentws setup

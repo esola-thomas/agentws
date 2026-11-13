@@ -230,7 +230,7 @@ config_parse() { # config_parse <file>
   AGENTWS_AUTO_RELEASE_MINUTES="${r_auto_release_minutes:-30}"
   AGENTWS_TEND_INTERVAL_MINUTES="${r_tend_interval:-15}"
   AGENTWS_TEND_REFRESH="$(config_bool "${r_tend_refresh:-true}" tend_refresh "$f")" || exit $?
-  AGENTWS_TEND_REAP="$(config_bool "${r_tend_reap:-false}" tend_reap "$f")" || exit $?
+  AGENTWS_TEND_REAP="$(config_bool "${r_tend_reap:-true}" tend_reap "$f")" || exit $?
   AGENTWS_TEND_FIX_ENV="$(config_bool "${r_tend_fix_env:-false}" tend_fix_env "$f")" || exit $?
   AGENTWS_TEND_SELF_UPDATE="$(config_bool "${r_tend_self_update:-false}" tend_self_update "$f")" || exit $?
   AGENTWS_SLOTS="$(printf '%s' "$r_slots" | sed -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//')"

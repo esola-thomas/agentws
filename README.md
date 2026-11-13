@@ -55,6 +55,10 @@ cd "$AGENTWS_WS" && git checkout -b fix/parser origin/main
 agentws recycle "$AGENTWS_SLOT"                         # after merge: reset and release
 ```
 
+Chain commands that need the lock with `&&`, not `;`, so a refused claim stops
+the chain. `claim --slot N` takes one specific slot; after a session restart,
+`AGENTWS_PID=$$ agentws lock --takeover N` re-binds your own lock.
+
 ## Connected tools
 
 | Tool | What `agentws setup` adds |
@@ -102,8 +106,11 @@ agentws tend schedule status
 agentws tend schedule uninstall
 ```
 
-The default interval is 15 minutes. Refresh is enabled; reaping finished slots,
-environment provisioning, and self-updates require explicit config opt-ins.
+The default interval is 15 minutes. Refresh and reaping are enabled. Reaping
+recycles a slot only when its lock is stale or absent, its branch is merged or
+gone upstream, its tree is clean, and nothing on it is missing from origin;
+every other stale lock is reported for manual review. Environment provisioning
+and self-updates require explicit config opt-ins.
 For one pass, `--no-refresh`, `--reap` / `--no-reap`, `--fix-env` /
 `--no-fix-env`, and `--self-update` / `--no-self-update` override config.
 Active locks and real uncommitted changes are never overridden. No daemon or

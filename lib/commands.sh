@@ -135,6 +135,61 @@ cmd_free() {
 }
 
 # -------------------------------------------------------------------- claim
+# Print why one named slot cannot be claimed, and return the exit code claim
+# uses for it. A lock this owner already holds does not count against it.
+_claim_slot_refusal() { # _claim_slot_refusal <slot>
+  local s="$1"
+  if ! provider_slot_exists "$s"; then
+    printf '%s does not exist\n' "$(slot_name "$s")"; return 6
+  fi
+  case "$(slot_role "$s")" in
+    reference) printf '%s is the reference slot; it is never claimed\n' "$(slot_name "$s")"; return 5 ;;
+    excluded)  printf '%s is excluded from claim; agentws lock %s takes it explicitly\n' "$(slot_name "$s")" "$s"; return 5 ;;
+  esac
+  if lock_format_unsupported "$s"; then
+    lock_format_refusal "$s"; printf '\n'; return 9
+  fi
+  if lock_active "$s" && ! lock_mine "$s"; then
+    printf '%s is held by %s: %s\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$(lock_read "$s" reason)"
+    return 4
+  fi
+  if [ "$(slot_dirty_count "$s")" != "0" ]; then
+    printf '%s is not clean (%s); it is not claimable\n' "$(slot_name "$s")" "$(slot_dirty_state "$s")"; return 5
+  fi
+  if ! slot_parked "$s"; then
+    printf '%s is on %s, not parked at origin/%s; it is not claimable\n' \
+      "$(slot_name "$s")" "$(slot_branch "$s")" "$AGENTWS_DEFAULT_BRANCH"
+    return 5
+  fi
+  if [ "${REQUIRE_ENV:-0}" -eq 1 ] && [ "$(slot_env_state "$s")" != "ready" ]; then
+    printf '%s environment is %s, and --require-env was given\n' "$(slot_name "$s")" "$(slot_env_state "$s")"
+    return 5
+  fi
+  return 0
+}
+
+# Lock <slot> for a claim and print the claim's stdout (path, env, or JSON).
+_claim_take() { # _claim_take <slot> <reason>
+  local s="$1" reason="$2" d
+  d="$(provider_slot_path "$s")"
+  if [ "${PRINT_ENV:-0}" -eq 1 ] || [ "${JSON:-0}" -eq 1 ]; then
+    cmd_lock "$s" "$reason" >&2 || return
+  else
+    cmd_lock "$s" "$reason" || return
+  fi
+  if [ "${JSON:-0}" -eq 1 ]; then
+    json_slot_obj "$s"
+  elif [ "${PRINT_ENV:-0}" -eq 1 ]; then
+    printf 'export AGENTWS_SLOT=%s\n' "$(sq "$s")"
+    printf 'export AGENTWS_OWNER=%s\n' "$(sq "$OWNER")"
+    printf 'export AGENTWS_WS=%s\n'    "$(sq "$d")"
+    printf 'export WS=%s\n'            "$(sq "$d")"
+    provider_claim_env "$s" "$d"
+  else
+    printf '%s\n' "$d"
+  fi
+}
+
 # Lock the first claimable slot and report which one.
 #
 # stdout by default is the workspace path. With --print-env it is shell
@@ -144,7 +199,22 @@ cmd_free() {
 # eval of empty output is harmless.
 cmd_claim() {
   local reason="${*:-unspecified}"
-  local s d pass env
+  local s pass env rc
+
+  if [ -n "${CLAIM_SLOT:-}" ]; then
+    s="$(slot_resolve "$CLAIM_SLOT")" || { printf 'unknown slot %s\n' "$CLAIM_SLOT" >&2; return 6; }
+    if [ "${AGENTWS_AUTO_REFRESH:-0}" -eq 1 ] && ! lock_active "$s"; then
+      _refresh_slot "$s" auto >/dev/null 2>&1 || true
+    fi
+    rc=0
+    _claim_slot_refusal "$s" >&2 || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    rc=0
+    _claim_take "$s" "$reason" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$rc" -eq 9 ] && return 9
+    return 4
+  fi
 
   if [ "${AGENTWS_AUTO_REFRESH:-0}" -eq 1 ]; then
     for s in $AGENTWS_SLOTS; do
@@ -166,25 +236,7 @@ cmd_claim() {
       else
         [ "$env" != "ready" ] || continue
       fi
-      d="$(provider_slot_path "$s")"
-
-      if [ "${PRINT_ENV:-0}" -eq 1 ] || [ "${JSON:-0}" -eq 1 ]; then
-        cmd_lock "$s" "$reason" >&2 || continue
-      else
-        cmd_lock "$s" "$reason" || continue
-      fi
-
-      if [ "${JSON:-0}" -eq 1 ]; then
-        json_slot_obj "$s"
-      elif [ "${PRINT_ENV:-0}" -eq 1 ]; then
-        printf 'export AGENTWS_SLOT=%s\n' "$(sq "$s")"
-        printf 'export AGENTWS_OWNER=%s\n' "$(sq "$OWNER")"
-        printf 'export AGENTWS_WS=%s\n'    "$(sq "$d")"
-        printf 'export WS=%s\n'            "$(sq "$d")"
-        provider_claim_env "$s" "$d"
-      else
-        printf '%s\n' "$d"
-      fi
+      _claim_take "$s" "$reason" || continue
       return 0
     done
   done
@@ -387,7 +439,7 @@ cmd_refresh() {
 # ------------------------------------------------------------------ recycle
 cmd_recycle() {
   [ $# -ge 1 ] || { printf 'recycle needs a slot\n' >&2; return 2; }
-  local s d current target delete_branch untracked sub_untracked tracked_dirty=0 deleted="" released=0 rc=0
+  local s d current target delete_branch untracked sub_untracked tracked_dirty=0 deleted="" released=0 rc=0 takeover=0 why elsewhere
   local removed=()
   s="$(slot_resolve "$1")" || { printf 'unknown slot %s\n' "$1" >&2; return 6; }
   slot_is_reference "$s" && { printf '%s is the reference slot; refusing to recycle it\n' "$(slot_name "$s")" >&2; return 2; }
@@ -400,8 +452,23 @@ cmd_recycle() {
   fi
   if [ -f "$(lock_file "$s")" ] && ! lock_mine "$s" && \
      ! { [ "${REAP_STALE:-0}" -eq 1 ] && lock_is_stale "$s"; }; then
-    printf '%s is held by %s, not you (%s)\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" >&2
-    return 4
+    # A stale lock on a slot that provably holds nothing unpublished is taken
+    # over, the same rule tend reaps by. Anything short of that stays manual.
+    if lock_is_stale "$s"; then
+      run git -C "$d" fetch origin --prune --quiet >&2 || true
+      if why="$(slot_finished_safe "$s")"; then
+        takeover=1
+        printf '%s stale lock from %s (%s), branch %s: taking over\n' "$(c_yel NOTE)" \
+          "$(lock_read "$s" owner)" "$(lock_stale_reason "$s")" "$why" >&2
+      else
+        printf '%s is held by %s, not you (%s); the lock is stale, but %s, so it is not taken over\n' \
+          "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" "$why" >&2
+        return 4
+      fi
+    else
+      printf '%s is held by %s, not you (%s)\n' "$(slot_name "$s")" "$(lock_read "$s" owner)" "$OWNER" >&2
+      return 4
+    fi
   fi
   if [ "$(slot_dirty_count "$s")" = "-1" ]; then
     printf '%s has unreadable git state; run agentws doctor %s; lock kept\n' "$(slot_name "$s")" "$s" >&2
@@ -474,7 +541,16 @@ EOF
 
   if [ -n "$delete_branch" ] && [ "$delete_branch" != "$AGENTWS_DEFAULT_BRANCH" ] && \
      git -C "$d" show-ref --verify --quiet "refs/heads/$delete_branch"; then
-    if run git -C "$d" branch -D -- "$delete_branch" >/dev/null; then
+    elsewhere="$(git -C "$d" worktree list --porcelain 2>/dev/null | awk -v ref="branch refs/heads/$delete_branch" \
+      -v me="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" \
+      '/^worktree /{wt=substr($0,10)} $0==ref && wt!=me {print wt}' | head -1)"
+    if [ -n "$elsewhere" ]; then
+      printf '%s is parked, but its branch %s is still checked out in %s%s, so it was not deleted; lock kept.\n' \
+        "$(slot_name "$s")" "$delete_branch" "$elsewhere" "$(_recycle_slot_label "$elsewhere")" >&2
+      printf 'Fix: switch that checkout off the branch (git -C %s switch --detach, after committing or moving its work), then rerun agentws recycle %s\n' \
+        "$(sq "$elsewhere")" "$s" >&2
+      rc=8
+    elif run git -C "$d" branch -D -- "$delete_branch" >/dev/null; then
       deleted="$delete_branch"
     else
       printf 'could not delete local branch %s\n' "$delete_branch" >&2
@@ -494,7 +570,10 @@ EOF
 
   if [ -f "$(lock_file "$s")" ]; then
     rc=0
-    if [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || rc=$?
+    if [ "$takeover" -eq 1 ]; then
+      if [ "${JSON:-0}" -eq 1 ]; then FORCE=1 cmd_unlock "$s" >&2 || rc=$?
+      else FORCE=1 cmd_unlock "$s" || rc=$?; fi
+    elif [ "${JSON:-0}" -eq 1 ]; then cmd_unlock "$s" >&2 || rc=$?
     else cmd_unlock "$s" || rc=$?; fi
     [ "$rc" -eq 9 ] && return 9
     [ "$rc" -eq 0 ] || return 4
@@ -514,6 +593,13 @@ EOF
 }
 
 cmd_done() { cmd_recycle "$@"; }
+
+_recycle_slot_label() { # _recycle_slot_label <path> -> " (slot N)" when a slot lives there
+  local s
+  for s in $AGENTWS_SLOTS; do
+    [ "$(provider_slot_path "$s")" = "$1" ] && { printf ' (slot %s)' "$s"; return 0; }
+  done
+}
 
 # ------------------------------------------------------------------- reap
 # Recycle every slot whose task is finished: stale or no lock, branch gone
@@ -1146,11 +1232,10 @@ _doctor_print() { # _doctor_print <json check array body>
 # --json form that wsctl:797 refused.
 cmd_lock_json() {
   [ $# -ge 1 ] || { printf 'lock needs a slot and a reason\n' >&2; return 2; }
-  local slot reason rc=0
+  local slot rc=0
   slot="$(slot_resolve "$1")" || { printf 'unknown slot %s\n' "$1" >&2; return 6; }
   shift
-  reason="${*:-unspecified}"
-  cmd_lock "$slot" "$reason" >&2 || rc=$?
+  cmd_lock "$slot" "$@" >&2 || rc=$?
   if [ $rc -ne 0 ]; then
     printf 'could not lock %s\n' "$(slot_name "$slot")" >&2
     [ $rc -eq 9 ] && return 9

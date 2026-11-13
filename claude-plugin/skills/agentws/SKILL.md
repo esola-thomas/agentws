@@ -32,7 +32,16 @@ agentws claim '<task>' --json | jq -r .data.bootstrap_hint   # run it in the slo
 Prefer the MCP tools (`workspace_claim`, `workspace_status`, `workspace_recycle`)
 when they are loaded; they are the same CLI without `--force`. A refusal
 (busy, stale lock, not claimable) is final: report it, or pick another slot.
-Never loop on a claim, never force, never ask the human to force.
+Never loop on a claim, never force, never ask the human to force. Chain
+anything that needs the lock with `&&`, never `;`, so a refusal stops it.
+
+```bash
+agentws claim --slot 3 '<task>'                # one specific slot, same refusals
+AGENTWS_PID=$$ agentws lock --takeover "$AGENTWS_SLOT"   # after a restart: re-bind your own lock
+```
+
+Never `unlock N; lock N` to re-enter a slot: `--takeover` does it atomically
+and only for the same owner.
 
 Dispatching a headless worker into the slot (Claude Code shown; any headless
 harness works the same way, with cwd set to the slot):
