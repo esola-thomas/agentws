@@ -233,13 +233,15 @@ EOF
   return 0
 )
 
-# One left-to-right scan: each quoted span, across lines, becomes Q.
+# One left-to-right scan: each quoted span, across lines, becomes Q; a # that
+# starts a word outside quotes ends the line, so a comment's apostrophe is not a quote.
 _guard_unquote() {
   awk '
     { n = length($0)
       for (i = 1; i <= n; i++) {
         c = substr($0, i, 1)
         if (q == "") {
+          if (c == "#" && (i == 1 || substr($0, i - 1, 1) ~ /[ \t;&|]/)) break
           if (c == "\\") { printf "%s", substr($0, i, 2); i++ }
           else if (c == "\047" || c == "\"") { q = c; printf "Q" }
           else printf "%s", c

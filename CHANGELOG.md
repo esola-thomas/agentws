@@ -34,8 +34,8 @@ All notable changes to this project are recorded here. Format follows
   of the farm table, so a worker that never claimed sees them.
 - Orphan state: a slot whose lock is stale by the existing ladder and whose
   task is unfinished (branch neither merged nor gone, or real changes; see
-  REFERENCE.md for the exact rule) shows
-  `ORPHANED (<reason>): <phase> · <next>` in `status`, `orphaned` and
+  REFERENCE.md for the exact rule) shows `ORPHANED (<reason>): <phase> ·
+  <next>` in `status`, `orphaned` and
   `orphan_reason` in `status --json`, and a `tend` problem. Nothing is
   released or taken over. A lock without `owner_pid` shows its checkpoint
   age in `status`, as information only.

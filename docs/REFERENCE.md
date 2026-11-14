@@ -89,8 +89,10 @@ checked with Claude Code 2.1.325, where the hook ran with
 Limits: it is a contract guard, not a sandbox. Bash commands that write
 files, other spellings of the two git commands (`git -C`, `git reset HEAD
 --hard`, aliases, `git switch`), and harnesses other than Claude Code are
-not covered. Paths are normalised lexically (`a/link/../b` is `a/b`), as the
-editing tools do, before symlinks are resolved.
+not covered. An unmatched quote, or a `$'...'` string with an escaped quote,
+hides the rest of the command from the guard. Paths are normalised lexically
+(`a/link/../b` is `a/b`), as the editing tools do, before symlinks are
+resolved.
 
 ## Configuration
 
@@ -234,8 +236,7 @@ session-start hook (`agentws hook session-start`) prints that slot's notice
 and checkpoint instead of the farm table when the session's directory is
 inside a slot that has a lock file, stale or not. A slot locked with `lock`
 rather than `claim` gets a one-line summary of the lock and label instead of
-a notice. Releasing the
-lock deletes the notice.
+a notice. Releasing the lock deletes the notice.
 
 ### Checkpoints
 
