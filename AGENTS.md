@@ -127,7 +127,8 @@ For Claude Code it also installs two hooks in `~/.claude/settings.json`:
   inside a slot. It denies `Write`, `Edit`, `MultiEdit`, and `NotebookEdit`
   to a path in another slot or in the reference slot, and a Bash command (or
   one segment of a `;`, `&&`, `||`, `|` chain) that is exactly
-  `git checkout <default-branch>` or `git reset --hard [ref]`. A session
-  outside every slot, such as an orchestrator at the farm root, is not
-  guarded. With no farm or no `jq` it allows silently. It fires under
-  `--dangerously-skip-permissions` too (verified with Claude Code 2.1.325).
+  `git checkout <default-branch>`, or is `git reset --hard` with any
+  arguments. A session outside every slot, such as an orchestrator at the
+  farm root, is not guarded. With no farm or no `jq` it allows silently. It
+  fires under `--dangerously-skip-permissions` too (verified with Claude
+  Code 2.1.325).

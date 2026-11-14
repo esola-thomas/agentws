@@ -72,8 +72,8 @@ directory is inside a slot, and then denies:
   symlinks;
 - a write or edit to a path inside the reference slot;
 - a Bash command, or one segment of a `;`, `&&`, `||`, or `|` chain, that is
-  exactly `git checkout <default-branch>` or `git reset --hard` with at most
-  one more argument.
+  exactly `git checkout <default-branch>`, or is `git reset --hard` with any
+  arguments.
 
 Anything else is allowed silently, and so is everything when there is no
 farm, no `jq`, or input it cannot parse. A session outside every slot, such
@@ -204,8 +204,8 @@ Every claim (plain, `--print-env`, `--json`, and MCP) then:
    is a warning (`claim_warnings` in JSON, `agentws: warning:` on stderr); the
    lock is kept and the claim succeeds.
 2. Evaluates `provider_claim_env`. Its `export K=V` lines go to `--print-env`
-   as before and become the `claim_env` object in JSON (values are unquoted, never
-   evaluated).
+   as before and become the `claim_env` object in JSON (values are unquoted,
+   never evaluated).
 3. Prints the notice to stderr, returns it as `notice` in JSON, and stores it
    as `<lock_dir>/<slot>.notice`:
 

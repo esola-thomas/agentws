@@ -30,10 +30,18 @@ _cp_read() { # _cp_read <file> <key> -> value
 
 checkpoint_exists() { _cp_regular "$(checkpoint_path "$1" "${2-}")"; }
 
-# Write <content-file> to <dest> by rename, so a reader sees the old file or the
-# new one, never half of either. mv replaces a symlink at <dest>, never its target.
+# Clear <dest> for a rename. mv onto a directory, or a symlink to one, moves
+# into it, so a link is removed and a directory refused.
+_cp_clear_dest() { # _cp_clear_dest <dest>
+  [ ! -L "$1" ] || rm -f "$1"
+  [ ! -d "$1" ]
+}
+
+# Write the producer's output to <dest> by rename, so a reader sees the old file
+# or the new one, never half of either, and never writes through a link.
 _cp_install() { # _cp_install <dest> <producer-cmd...>
   local dest="$1" tmp; shift
+  _cp_clear_dest "$dest" || return 1
   tmp="$(mktemp "$AGENTWS_LOCK_DIR/.cp.XXXXXX")" || return 1
   if "$@" > "$tmp" && mv -f "$tmp" "$dest"; then return 0; fi
   rm -f "$tmp"
@@ -80,8 +88,8 @@ checkpoint_on_acquire() { # checkpoint_on_acquire <slot> <previous-lock-owner>
   cp="$(checkpoint_path "$s")"
   [ "$(_cp_read "$cp" owner)" = "$OWNER" ] && return 0
   rm -f "$cp.prev.md"
-  [ ! -e "$cp.md" ] || mv -f "$cp.md" "$cp.prev.md"
-  mv -f "$cp" "$cp.prev"
+  _cp_clear_dest "$cp.prev.md" && { [ ! -e "$cp.md" ] || mv -f "$cp.md" "$cp.prev.md"; }
+  _cp_clear_dest "$cp.prev" && mv -f "$cp" "$cp.prev"
   return 0
 }
 

@@ -224,6 +224,25 @@ probe() { # probe <slot> -> "claimable free stale reap"
   [ -z "$(find "$LOCKS" -name '.cp.*')" ]
 }
 
+@test "a symlink to a directory at a checkpoint path is replaced, never written into" {
+  agentws lock 1 work >/dev/null
+  mkdir -p "$SANDBOX/victimdir"
+  ln -s "$SANDBOX/victimdir" "$(cp_file 1)"
+  ln -s "$SANDBOX/victimdir" "$(cp_file 1 .log)"
+  (cd "$ROOT/1_proj" && agentws checkpoint set --phase safe >/dev/null)
+  [ -z "$(ls -A "$SANDBOX/victimdir")" ]
+  [ -f "$(cp_file 1)" ] && [ ! -L "$(cp_file 1)" ]
+
+  # The same for the previous generation on a takeover.
+  agentws unlock 1 >/dev/null
+  write_lock_default 1 "owner_pid=4242" "owner_start=777"
+  (cd "$ROOT/1_proj" && agentws checkpoint set --phase old >/dev/null)
+  ln -s "$SANDBOX/victimdir" "$(cp_file 1 .prev)"
+  agentws lock 1 newtask >/dev/null
+  [ -z "$(ls -A "$SANDBOX/victimdir")" ]
+  [ "$(sed -n 's/^phase=//p' "$(cp_file 1 .prev)")" = old ]
+}
+
 @test "unlock, recycle, and reap delete the checkpoint" {
   agentws lock 1 work >/dev/null
   (cd "$ROOT/1_proj" && agentws checkpoint set --phase a >/dev/null)
@@ -261,12 +280,14 @@ probe() { # probe <slot> -> "claimable free stale reap"
   [ "$(last_json | jq -r '.data.previous.body')" = notes ]
 }
 
-@test "the same owner re-locking its own stale lock keeps the checkpoint" {
+@test "the same owner re-locking its own stale lock keeps the checkpoint and notice" {
   write_lock_default 1 "owner=tester" "owner_pid=4242" "owner_start=777"
   (cd "$ROOT/1_proj" && agentws checkpoint set --phase mine >/dev/null)
+  printf 'my notice\n' > "$LOCKS/1.notice"
   run agentws lock 1 again
   [ "$status" -eq 0 ]
   [ "$(sed -n 's/^phase=//p' "$(cp_file 1)")" = mine ]
+  [ "$(cat "$LOCKS/1.notice")" = "my notice" ]
   [ ! -e "$(cp_file 1 .prev)" ]
 }
 

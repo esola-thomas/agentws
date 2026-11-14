@@ -118,9 +118,9 @@ build_farm() {
   printf '%s\n' "$output" | grep '^1_proj' | grep -q 'ORPHANED (process_dead).*: implement · finish the parser'
   printf '%s\n' "$output" | grep '^2_proj' | grep -q 'ORPHANED (process_dead).*: no checkpoint; lock by other'
   printf '%s\n' "$output" | grep '^3_proj' | grep -q 'stale lock (other)'
-  ! printf '%s\n' "$output" | grep '^3_proj' | grep -q ORPHANED
+  [ -z "$(printf '%s\n' "$output" | grep '^3_proj' | grep ORPHANED)" ]
   printf '%s\n' "$output" | grep '^5_proj' | grep -q 'last checkpoint 0m ago'
-  ! printf '%s\n' "$output" | grep '^4_proj' | grep -q 'last checkpoint'
+  [ -z "$(printf '%s\n' "$output" | grep '^4_proj' | grep 'last checkpoint')" ]
 }
 
 @test "orphan state changes nothing: locks, branches, claimability stay as they were" {
@@ -139,7 +139,7 @@ build_farm() {
   run agentws tend --json --no-reap
   last_json | jq -e '.data.problems | any(test("^1: orphaned \\(process_dead\\): implement · finish the parser"))' >/dev/null
   last_json | jq -e '.data.problems | any(test("^2: orphaned \\(process_dead\\)"))' >/dev/null
-  ! last_json | jq -e '.data.problems | any(test("^[345]: orphaned"))' >/dev/null
+  [ "$(last_json | jq '[.data.problems[] | select(test("^[345]: orphaned"))] | length')" -eq 0 ]
   [ -f "$(lock_path 1)" ] && [ -f "$(lock_path 2)" ]
   [ "$(git -C "$ROOT/1_proj" branch --show-current)" = feat/one ]
 }

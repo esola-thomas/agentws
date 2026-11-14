@@ -197,7 +197,8 @@ _claim_take() { # _claim_take <slot> <reason>
   fi
 
   rc=0
-  [ "${DRY:-0}" -eq 1 ] || provider_slot_claimed "$s" "$d" >&2 || rc=$?
+  # A subshell, so a hook that exits or dies still cannot end the claim.
+  [ "${DRY:-0}" -eq 1 ] || ( provider_slot_claimed "$s" "$d" ) >&2 || rc=$?
   [ "$rc" -eq 0 ] || warns+=("provider $AGENTWS_PROVIDER: provider_slot_claimed failed (rc $rc); the lock is kept")
   rc=0
   envlines="$(provider_claim_env "$s" "$d")" || rc=$?

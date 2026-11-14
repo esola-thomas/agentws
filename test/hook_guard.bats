@@ -79,6 +79,8 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
   denied
   guard "$ROOT/1_proj" Bash command "git fetch; git checkout main"
   denied
+  guard "$ROOT/1_proj" Bash command "git reset --hard HEAD -- extra args"
+  denied
 }
 
 @test "other git commands in a slot are allowed" {
@@ -101,9 +103,9 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
 
 @test "silent exit 0 with no farm" {
   unset AGENTWS_CONFIG
-  mkdir -p "$SANDBOX/nofarm/home"
-  hook_input "$SANDBOX/nofarm" Write file_path "$SANDBOX/nofarm/x" > "$SANDBOX/in.json"
-  HOME="$SANDBOX/nofarm/home" run bash -c '"$1" hook pre-tool-use < "$2"' _ "$AGENTWS_BIN" "$SANDBOX/in.json"
+  mkdir -p "$SANDBOX/nofarm"
+  hook_input "$SANDBOX/nofarm" Write file_path "$ROOT/2_proj/x" > "$SANDBOX/in.json"
+  HOME="$SANDBOX/nofarm" run bash -c '"$1" hook pre-tool-use < "$2"' _ "$AGENTWS_BIN" "$SANDBOX/in.json"
   allowed
 }
 

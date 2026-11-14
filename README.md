@@ -23,8 +23,9 @@ curl -fsSL https://raw.githubusercontent.com/esola-thomas/agentws/main/install.s
 
 This installs the CLI into `~/.local/bin` and connects every AI tool it finds:
 MCP server, agent skill, and (for Claude Code) a session-start hook that shows
-the farm and a guard hook that enforces the slot contract inside a slot. The install updates itself to each new release in the background, at
-most once a day.
+the farm and a guard hook that enforces the slot contract inside a slot. The
+install updates itself to each new release in the background, at most once a
+day.
 
 Requirements: bash, git, and jq. Linux, macOS, or WSL2.
 

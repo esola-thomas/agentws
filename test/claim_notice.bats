@@ -98,10 +98,24 @@ notice_file() { printf '%s/%s.notice' "$LOCKS" "$1"; }
   [ -f "$(lock_path 2)" ]
 }
 
+@test "a provider_slot_claimed that exits or dies still leaves a successful claim" {
+  printf 'provider_slot_claimed() { die "setup broke"; }\n' >> "$SANDBOX/prov/hooktest.sh"
+  run agentws claim --json work
+  [ "$status" -eq 0 ]
+  [ "$(last_json | jq -r '.ok')" = true ]
+  last_json | jq -r '.data.claim_warnings[0]' | grep -q 'provider_slot_claimed failed (rc 1)'
+  [ -f "$(lock_path 1)" ]
+  printf 'provider_slot_claimed() { exit 9; }\n' >> "$SANDBOX/prov/hooktest.sh"
+  run agentws claim --print-env work2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"export AGENTWS_SLOT='2'"* ]]
+  [ -f "$(lock_path 2)" ]
+}
+
 @test "a failing provider_claim_notice drops its lines and warns" {
   NOTICE_FAIL=1 run agentws claim --json work
   [ "$status" -eq 0 ]
-  ! last_json | jq -r '.data.notice' | grep -q 'half a line'
+  [[ "$(last_json | jq -r '.data.notice')" != *'half a line'* ]]
   last_json | jq -r '.data.claim_warnings[0]' | grep -q 'provider_claim_notice failed (rc 5)'
 }
 
@@ -111,7 +125,7 @@ notice_file() { printf '%s/%s.notice' "$LOCKS" "$1"; }
   run agentws claim --slot lab --json work
   [ "$status" -eq 0 ]
   [ "$(last_json | jq -r '.data.label')" = my_proj_x_lab ]
-  ! last_json | jq -r '.data.notice' | grep -q 'Ports'
+  [[ "$(last_json | jq -r '.data.notice')" != *Ports* ]]
 }
 
 @test "the notice is deleted on unlock and replaced by the next owner's claim" {

@@ -140,14 +140,22 @@ cmd_hook() {
 # for a session whose cwd is inside a slot. Prints "deny:<reason>" to refuse;
 # prints nothing to allow. An orchestrator at the farm root is not guarded.
 hook_guard() { # hook_guard <hook-input-json>
-  local in="$1" cwd tool path mine target
-  cwd="$(printf '%s' "$in" | jq -r '.cwd // empty' 2>/dev/null)" || return 0
+  local in="$1" cwd tool path cmd="" mine target
+  tool="$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null)" || return 0
+  case "$tool" in
+    Write|Edit|MultiEdit|NotebookEdit) ;;
+    Bash)
+      # Most Bash calls cannot match; skip loading the farm for them.
+      cmd="$(printf '%s' "$in" | jq -r '.tool_input.command // empty')"
+      case "$cmd" in *git*checkout*|*git*reset*) ;; *) return 0 ;; esac ;;
+    *) return 0 ;;
+  esac
+  cwd="$(printf '%s' "$in" | jq -r '.cwd // empty')"
   [ -n "$cwd" ] || cwd="$(pwd)"
   cd "$cwd" 2>/dev/null || return 0
   config_load || return 0
   provider_load || return 0
   mine="$(slot_from_dir "$(pwd -P)")" || return 0
-  tool="$(printf '%s' "$in" | jq -r '.tool_name // empty')"
   case "$tool" in
     Write|Edit|MultiEdit|NotebookEdit)
       path="$(printf '%s' "$in" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')"
@@ -161,8 +169,7 @@ hook_guard() { # hook_guard <hook-input-json>
         printf 'deny:%s is in slot %s (%s), but this session works in slot %s (%s). Edit only the slot you are in; another task holds that one.\n' \
           "$path" "$target" "$(slot_name "$target")" "$mine" "$(slot_name "$mine")"
       fi ;;
-    Bash)
-      _guard_bash "$(printf '%s' "$in" | jq -r '.tool_input.command // empty')" ;;
+    Bash) _guard_bash "$cmd" ;;
   esac
   return 0
 }
@@ -187,8 +194,8 @@ _guard_resolve() { # _guard_resolve <abs-path>
   printf '%s%s' "$d" "$rest"
 }
 
-_guard_lexical() { # _guard_lexical <abs-path>
-  local IFS=/ part out=""
+_guard_lexical() ( # _guard_lexical <abs-path>; a subshell keeps IFS and set -f here
+  IFS=/ part="" out=""
   set -f
   for part in $1; do
     case "$part" in
@@ -197,26 +204,24 @@ _guard_lexical() { # _guard_lexical <abs-path>
       *) out="$out/$part" ;;
     esac
   done
-  set +f
   printf '%s' "${out:-/}"
-}
+)
 
 # The two git commands the contract forbids inside a slot, as a whole command
 # or as one segment of a ; && || | chain.
-_guard_bash() { # _guard_bash <command>
-  local cmd="$1" seg
+_guard_bash() ( # _guard_bash <command>; a subshell keeps set -f here
+  cmd="$1" seg=""
+  set -f
   while IFS= read -r seg; do
-    set -f
     # shellcheck disable=SC2086  # word splitting collapses whitespace on purpose
     set -- $seg
-    set +f
     [ "${1-}" = git ] || continue
     if [ $# -eq 3 ] && [ "$2" = checkout ] && [ "$3" = "$AGENTWS_DEFAULT_BRANCH" ]; then
       printf 'deny:git checkout %s inside a slot puts it on a ref other worktrees share. Branch with: git checkout -b <branch> origin/%s. Return the slot with: agentws recycle.\n' \
         "$AGENTWS_DEFAULT_BRANCH" "$AGENTWS_DEFAULT_BRANCH"
       return 0
     fi
-    if [ $# -ge 3 ] && [ $# -le 4 ] && [ "$2" = reset ] && [ "$3" = --hard ]; then
+    if [ $# -ge 3 ] && [ "$2" = reset ] && [ "$3" = --hard ]; then
       printf 'deny:git reset --hard inside a slot discards work the agentws contract protects. The only reset is agentws recycle, run on your own slot.\n'
       return 0
     fi
@@ -224,7 +229,7 @@ _guard_bash() { # _guard_bash <command>
 $(printf '%s\n' "$cmd" | tr ';|&' '\n\n\n')
 EOF
   return 0
-}
+)
 
 # --------------------------------------------------------------------- setup
 # setup_detected <harness>: its command is on PATH. Cursor also counts with only
