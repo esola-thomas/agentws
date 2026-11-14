@@ -32,6 +32,12 @@ All notable changes to this project are recorded here. Format follows
   stores it as `<lock_dir>/<slot>.notice`. Inside a locked slot,
   `agentws hook session-start` prints that notice and the checkpoint instead
   of the farm table, so a worker that never claimed sees them.
+- Orphan state: a slot whose lock is stale by the existing ladder and whose
+  task is unfinished (branch neither merged nor gone, or real changes) shows
+  `ORPHANED (<reason>): <phase> · <next>` in `status`, `orphaned` and
+  `orphan_reason` in `status --json`, and a `tend` problem. Nothing is
+  released or taken over. A lock without `owner_pid` shows its checkpoint
+  age in `status`, as information only.
 - Provider hooks `provider_slot_claimed` (run once per claim; a failure is a
   claim warning and never releases the lock) and `provider_claim_notice`
   (extra notice lines). Both have defaults, so the provider API stays 1.

@@ -28,7 +28,7 @@ cmd_status() {
     return 0
   fi
 
-  local d br dirty dirty_state env ab ahead behind note dirty_disp cps missing_names=""
+  local d br dirty dirty_state env ab ahead behind note dirty_disp cps cpa orphan missing_names=""
   printf '%-16s %-28s %-14s %-8s %-7s %s\n' "WORKSPACE" "BRANCH" "DIRTY" "ENV" "AHEAD" "NOTE"
   printf '%s\n' "------------------------------------------------------------------------------------------------"
   for s in $AGENTWS_SLOTS; do
@@ -42,7 +42,7 @@ cmd_status() {
     dirty_state="$(slot_dirty_state "$s")"
     env="$(slot_env_state "$s")"
     ab="$(slot_ahead_behind "$s")"; ahead="${ab%% *}"; behind="${ab##* }"
-    note=""
+    note=""; orphan=""
     [ -z "$(slot_upstream "$s")" ] && note="no upstream"
 
     if slot_is_reference "$s"; then
@@ -56,11 +56,25 @@ cmd_status() {
       note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), lock format $(lock_sanitize "$(lock_format "$s")") is not supported; run agentws update")"
     elif lock_active "$s"; then
       note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), $(lock_remaining_display "$s") left")"
+      # Without owner_pid only the TTL can end this lock; the checkpoint age
+      # is shown for a human to judge, and never read as liveness.
+      if [ -z "$(lock_read "$s" owner_pid 2>/dev/null || true)" ] && \
+         cpa="$(checkpoint_age_seconds "$s")"; then
+        note="$note, last checkpoint $(_cp_age "$cpa") ago"
+      fi
     elif [ -f "$(lock_file "$s")" ]; then
-      note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
+      orphan="$(slot_orphan_reason "$s" || true)"
+      if [ -n "$orphan" ]; then
+        cps="$(checkpoint_summary "$s" next)"
+        note="${note:+$note, }$(c_red "ORPHANED ($orphan)"): ${cps:-no checkpoint; lock by $(lock_read "$s" owner)}"
+      else
+        note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
+      fi
     fi
-    cps="$(checkpoint_summary "$s")"
-    [ -z "$cps" ] || note="${note:+$note, }$cps"
+    if [ -z "$orphan" ]; then
+      cps="$(checkpoint_summary "$s")"
+      [ -z "$cps" ] || note="${note:+$note, }$cps"
+    fi
     [ "$(slot_reap_state "$s")" = "reap" ] && \
       note="${note:+$note, }$(c_yel "merged/gone: run agentws recycle $s")"
 

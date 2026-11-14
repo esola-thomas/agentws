@@ -86,6 +86,10 @@ agentws lock --takeover "$AGENTWS_SLOT"      # same owner only; keeps the reason
   detached; it refuses anything that is real dirt.
 - A slot showing `N files dirty` that you do not hold belongs to someone
   else's in-flight task. Leave it.
+- `ORPHANED` in `status` (or `"orphaned": true`) is a stale lock on a slot
+  with unfinished work. It is reported, never cleaned up for you. Resume it
+  only if that task is yours to resume: `agentws lock <slot>` takes the stale
+  lock, and `agentws checkpoint show` prints where the dead task stopped.
 - Lock liveness is tied to `AGENTWS_PID`. If you fork a subprocess to do the
   work, the lock still belongs to the shell you exported.
 - A stale lock on a finished slot (branch merged or gone, clean tree, nothing

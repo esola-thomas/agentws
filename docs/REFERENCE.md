@@ -227,6 +227,29 @@ agentws checkpoint show 3 --json
 No lock, claim, or staleness decision reads a checkpoint. See
 [LOCKING.md](LOCKING.md#checkpoints-and-notices).
 
+### Orphaned slots
+
+A slot is orphaned when its lock is stale by the existing ladder
+(`process_dead` or `ttl`) and the slot still holds a task `reap` would not
+recycle: its branch is neither merged nor gone, or its tree has real changes.
+A stale lock on a parked, clean slot is not an orphan; that slot is simply
+claimable.
+
+- `status` shows `ORPHANED (process_dead): <phase> · <next>` from the
+  checkpoint, or `no checkpoint; lock by <owner>`.
+- `status --json` has `orphaned` (bool) and `orphan_reason`
+  (`process_dead`, `ttl`, or `null`) on every slot.
+- `tend` reports each orphan as a problem.
+
+Nothing releases, takes over, or resumes an orphan on its own. Taking one
+over is an explicit `lock` by whoever resumes the task; the old checkpoint
+then becomes the previous one.
+
+A lock with no `owner_pid` (no `AGENTWS_PID` at claim time, or an MCP claim
+without `session_pid`) can only go stale by TTL. For those, `status` adds
+`last checkpoint 6h ago` to the lock note, as information for a human. It is
+never a liveness input.
+
 ### Broken worktrees
 
 An unreadable checkout is `broken` in status, with `dirty: -1` and the

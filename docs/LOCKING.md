@@ -276,6 +276,10 @@ and they never change the lock file or its format. Providers never write
 them. Releasing a lock deletes the checkpoint and the notice. A takeover by a different owner keeps the old checkpoint as the
 previous one, after the new lock has been written.
 
+The orphan state (`status`, `status --json` `orphaned`, `tend`) is computed
+from `lock_stale_reason` and the existing reap predicates. It adds no new
+staleness rule and is never a reason to release or take over a lock.
+
 ## The six-case matrix
 
 `test/lock_matrix.bats` runs these. `/proc` is faked through the `AGENTWS_PROC`

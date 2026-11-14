@@ -207,7 +207,7 @@ tools_json() {
   cat <<'JSON'
 [
  {"name":"workspace_status",
-  "description":"List every workspace slot with git, environment, phantom-dirty, lock metadata, remaining TTL, and claimability state. Read-only. Call this before claiming.",
+  "description":"List every workspace slot with git, environment, phantom-dirty, lock metadata, remaining TTL, claimability, orphan state, and checkpoint. Read-only. Call this before claiming.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session. Use the same value for every call in the session. Lock ownership is scoped to it."}},
    "required":["session"]}},
