@@ -10,6 +10,12 @@ back when the pull request merges.
 This plugin teaches Claude how to use an agentws slot farm. It contains two
 skills and nothing else: no executables, no MCP server, no hooks.
 
+Install the plugin from its marketplace in Claude Code:
+
+```
+/plugin install agentws --marketplace esola-thomas/agentws
+```
+
 | Skill | What it does |
 |---|---|
 | `/agentws:init` | Walks you through creating a slot farm for a Git repository: location, slot count, provider, remotes, and submodules. It proposes a setup and waits for your approval before changing anything. |
@@ -18,11 +24,9 @@ skills and nothing else: no executables, no MCP server, no hooks.
 ## Requirements
 
 The skills drive the `agentws` command-line tool, which is installed separately
-and is not part of this plugin:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/esola-thomas/agentws/main/install.sh | bash
-```
+and is not part of this plugin. Install it by following the
+[Install section of the project README](https://github.com/esola-thomas/agentws#install).
+The skills never install it for you.
 
 The CLI needs bash, git, and jq, on Linux, macOS, or WSL2. Because the skills
 run local shell commands, the plugin is useful where Claude has a shell on your
