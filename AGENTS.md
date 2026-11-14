@@ -118,3 +118,16 @@ is always safe.
 tools) and `skills/agentws/SKILL.md`, the same ritual plus headless-worker
 rules: `~/.claude/skills/agentws` for Claude Code, `~/.agents/skills/agentws`
 for Codex, Copilot, Cursor, and Gemini. Every path runs the same CLI.
+
+For Claude Code it also installs two hooks in `~/.claude/settings.json`:
+
+- SessionStart, `agentws hook session-start`: the farm table, or, inside a
+  locked slot, that slot's claim notice and checkpoint.
+- PreToolUse, `agentws hook pre-tool-use`, for a session whose directory is
+  inside a slot. It denies `Write`, `Edit`, `MultiEdit`, and `NotebookEdit`
+  to a path in another slot or in the reference slot, and a Bash command (or
+  one segment of a `;`, `&&`, `||`, `|` chain) that is exactly
+  `git checkout <default-branch>` or `git reset --hard [ref]`. A session
+  outside every slot, such as an orchestrator at the farm root, is not
+  guarded. With no farm or no `jq` it allows silently. It fires under
+  `--dangerously-skip-permissions` too (verified with Claude Code 2.1.325).

@@ -5,7 +5,8 @@
 | Command | What it does |
 |---|---|
 | `init [repo] [--slots N] [--root DIR]` | Create a farm for a checkout: `<repo>-ws/.agentws.yml` plus N worktree slots. The first farm becomes the default. |
-| `setup [harness...]` | Wire AI tools to this install. `--check`, `--remove`. Harnesses: `claude codex copilot cursor gemini all`. With no names, every tool whose command is on PATH (Cursor: `cursor`, `cursor-agent`, or a `~/.cursor` dir). An existing `AGENTWS_OWNER_PREFIX` on the agentws MCP entry is kept. `--check` shows `mcp:stale` for an entry that needs `agentws setup` again. |
+| `hook session-start\|pre-tool-use` | Claude Code hooks, installed by `setup`. See Hooks. |
+| `setup [harness...]` | Wire AI tools to this install. For Claude Code this includes the SessionStart and PreToolUse hooks. `--check`, `--remove`. Harnesses: `claude codex copilot cursor gemini all`. With no names, every tool whose command is on PATH (Cursor: `cursor`, `cursor-agent`, or a `~/.cursor` dir). An existing `AGENTWS_OWNER_PREFIX` on the agentws MCP entry is kept. `--check` shows `mcp:stale` for an entry that needs `agentws setup` again. |
 | `use [config]` | Make a farm the default, so agents find it from any directory. |
 | `update` | Update a managed install now. `--check` only reports. |
 | `version` | Installed version. |
@@ -52,6 +53,38 @@ the same as `--owner ID`; the MCP server's owner for a session is
 `<AGENTWS_OWNER_PREFIX>:<session>`, so pass that to share a lock between the
 CLI and MCP. After a restart, `agentws lock --takeover N` re-binds your lock to
 the new `AGENTWS_PID`.
+
+## Hooks
+
+`agentws setup claude` adds two command hooks to `~/.claude/settings.json`,
+found again by their `hook session-start` and `hook pre-tool-use` commands so
+re-running setup never duplicates them and `--remove` removes only them.
+
+`hook session-start` prints the farm table, or, when the session starts
+inside a locked slot, that slot's claim notice and checkpoint (see Claim
+notice). It is silent with exit 0 when there is no farm.
+
+`hook pre-tool-use` is a PreToolUse guard (matcher
+`Write|Edit|MultiEdit|NotebookEdit|Bash`). It applies only when the session's
+directory is inside a slot, and then denies:
+
+- a write or edit to a path inside another slot, resolved through `..` and
+  symlinks;
+- a write or edit to a path inside the reference slot;
+- a Bash command, or one segment of a `;`, `&&`, `||`, or `|` chain, that is
+  exactly `git checkout <default-branch>` or `git reset --hard` with at most
+  one more argument.
+
+Anything else is allowed silently, and so is everything when there is no
+farm, no `jq`, or input it cannot parse. A session outside every slot, such
+as an orchestrator writing briefs into slots it claimed, is never guarded.
+Command hooks fire under `--dangerously-skip-permissions` as well; this was
+checked with Claude Code 2.1.325, where the hook ran with
+`permission_mode: bypassPermissions` and its deny blocked the write.
+
+Limits: it is a contract guard, not a sandbox. Bash commands that write
+files, other spellings of the two git commands (`git -C`, aliases, `git
+switch`), and harnesses other than Claude Code are not covered.
 
 ## Configuration
 

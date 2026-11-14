@@ -38,6 +38,11 @@ All notable changes to this project are recorded here. Format follows
   `orphan_reason` in `status --json`, and a `tend` problem. Nothing is
   released or taken over. A lock without `owner_pid` shows its checkpoint
   age in `status`, as information only.
+- `agentws hook pre-tool-use`, a Claude Code PreToolUse guard that
+  `agentws setup` installs next to the session-start hook. For a session
+  inside a slot it denies writes to another slot or the reference slot, and
+  `git checkout <default-branch>` and `git reset --hard`. Sessions outside
+  every slot are not guarded; no farm or no `jq` allows silently.
 - Provider hooks `provider_slot_claimed` (run once per claim; a failure is a
   claim warning and never releases the lock) and `provider_claim_notice`
   (extra notice lines). Both have defaults, so the provider API stays 1.

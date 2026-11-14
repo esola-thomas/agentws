@@ -36,6 +36,8 @@
 #                                  (--yes all candidates, --push no final prompt,
 #                                   --dry-run preview, --base B)
 #   agentws config                 show the resolved configuration
+#   agentws hook session-start     Claude Code hooks, installed by setup: the farm,
+#   agentws hook pre-tool-use      or the slot notice; the in-slot contract guard
 #
 # Every command supports --json. Output is one envelope line on stdout:
 #   {"ok":bool,"command":str,"data":object|null,"error":null|{"code","message"}}

@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/esola-thomas/agentws/main/install.s
 
 This installs the CLI into `~/.local/bin` and connects every AI tool it finds:
 MCP server, agent skill, and (for Claude Code) a session-start hook that shows
-the farm. The install updates itself to each new release in the background, at
+the farm and a guard hook that enforces the slot contract inside a slot. The install updates itself to each new release in the background, at
 most once a day.
 
 Requirements: bash, git, and jq. Linux, macOS, or WSL2.
@@ -63,7 +63,7 @@ the chain. `claim --slot N` takes one specific slot; after a session restart,
 
 | Tool | What `agentws setup` adds |
 |---|---|
-| Claude Code | MCP server (user scope), `/agentws` skill, SessionStart hook |
+| Claude Code | MCP server (user scope), `/agentws` skill, SessionStart and PreToolUse hooks |
 | Codex CLI | MCP server in `~/.codex/config.toml`, skill in `~/.agents/skills` |
 | GitHub Copilot CLI | MCP server in `~/.copilot/mcp-config.json`, skill |
 | Cursor | MCP server in `~/.cursor/mcp.json`, skill |
@@ -86,7 +86,7 @@ the plugin in Claude Code:
 The plugin provides `/agentws:init` for an interactive farm setup and
 `/agentws:agentws` for the slot lifecycle. Installing the plugin provides
 skills; its package contains no CLI executables. Install the CLI separately,
-then run `agentws setup claude` to register the MCP server and SessionStart hook.
+then run `agentws setup claude` to register the MCP server and hooks.
 
 ## Updates
 

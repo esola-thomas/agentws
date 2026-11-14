@@ -101,3 +101,8 @@ keeps the lock rather than handing on a dirty slot.
 `git worktree remove` / `rm -rf` / `reset --hard` on a slot · `git checkout
 <default>` inside a slot · editing a slot you do not hold · a second task in
 the same claim.
+
+In Claude Code, the `agentws hook pre-tool-use` guard denies edits to another
+slot or the reference slot, `git checkout <default>`, and `git reset --hard`
+when the session is inside a slot. A denial is the contract, not a bug: do
+not work around it.
