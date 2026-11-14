@@ -34,6 +34,14 @@ refusal (busy, stale lock, not claimable) is final: report it, or pick another
 slot. Never loop on a claim, never force, never ask the human to force. Chain a
 command that depends on a lock with `&&`, not `;`, so a refusal stops it.
 
+```bash
+agentws claim --slot 3 '<task>'                # one specific slot, same refusals
+AGENTWS_PID=$$ agentws lock --takeover "$AGENTWS_SLOT"   # after a restart: re-bind your own lock
+```
+
+Never `unlock N; lock N` to re-enter a slot: `--takeover` does it atomically
+and only for the same owner.
+
 To hand a slot to another agent, start that agent with its working directory
 set to `$AGENTWS_WS` and the task in its prompt, using whatever launch method
 and permission settings the developer already uses. The worker's work stays on

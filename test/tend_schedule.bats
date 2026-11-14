@@ -62,7 +62,7 @@ schedule() {
 @test "tend config defaults and normalized positive integers" {
   run bash -uc '. "$REPO/lib/core.sh"; . "$REPO/lib/config.sh"; config_parse "$CONFIG"; JSON=1; cmd_config'
   [ "$status" -eq 0 ]
-  printf '%s' "$output" | jq -e '.tend_interval_minutes == 15 and .tend_refresh and (.tend_reap|not) and (.tend_fix_env|not) and (.tend_self_update|not)'
+  printf '%s' "$output" | jq -e '.tend_interval_minutes == 15 and .tend_refresh and .tend_reap and (.tend_fix_env|not) and (.tend_self_update|not)'
   printf 'tend_interval_minutes: 0071\n' >> "$CONFIG"
   run schedule status
   [ "$status" -eq 0 ]

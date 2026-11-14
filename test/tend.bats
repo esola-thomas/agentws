@@ -109,14 +109,14 @@ action_for() { jq -r --arg s "$1" '.data.slots[] | select(.slot==$s) | .action';
   [ "$(git -C "$ROOT/3_proj" rev-parse HEAD)" = "$old" ]
 }
 
-@test "task branch and stale lock are preserved unless safe reaping is enabled" {
+@test "a finished task branch with a stale lock is reaped by default, kept with --no-reap" {
   git -C "$ROOT/1_proj" checkout -qb task/finished
   write_lock_default 1 epoch=1
-  run agentws tend --json
+  run agentws tend --no-reap --json
   [ "$status" -eq 0 ]
   [ "$(last_json | action_for 1)" = skipped:task-branch ]
   [ -f "$(lock_path 1)" ]
-  run agentws tend --reap --json
+  run agentws tend --json
   [ "$status" -eq 0 ]
   [ "$(last_json | action_for 1)" = reaped ]
   [ ! -f "$(lock_path 1)" ]

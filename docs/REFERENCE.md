@@ -11,16 +11,16 @@
 | `version` | Installed version. |
 | `status` | Every slot: branch, dirty, lock, claimable, environment. |
 | `free` | Idle slots. |
-| `claim "reason"` | Lock the first claimable slot. `--print-env` for `eval`. |
-| `lock <slot> "reason"` / `unlock <slot>` | Lock or release a specific slot. |
+| `claim "reason"` | Lock the first claimable slot. `--print-env` for `eval`. `--slot N` claims that slot only, with the same refusals (held: exit 4; reference, excluded, dirty, or not parked: exit 5; unknown: exit 6) and the same output. |
+| `lock <slot> "reason"` / `unlock <slot>` | Lock or release a specific slot. `lock --takeover <slot> [reason]` re-binds a lock whose owner is yours to the current `AGENTWS_PID` and, if given, a new reason, in one atomic rewrite (use it after a session restart instead of `unlock` then `lock`). It never takes another owner's lock. |
 | `locks` | All locks with age and remaining TTL. |
-| `recycle <slot>` / `done <slot>` | After merge: fetch, park detached at `origin/<default>`, delete the task branch, release. |
+| `recycle <slot>` / `done <slot>` | After merge: fetch, park detached at `origin/<default>`, delete the task branch, release. Takes over another owner's lock only when it is stale and the slot is provably finished (see Maintenance). If another checkout still has the branch, it names that checkout and keeps the lock. |
 | `reap` | Recycle every slot with a stale or no lock, a branch gone upstream or merged into `origin/<default>`, and a clean tree (or only submodule lag). Never touches an active lock, the reference or excluded slots, or real uncommitted changes (listed and refused). Asks once; `--yes` skips it, `--dry-run` previews, `--json` needs one of them. |
 | `refresh [slot...]` | Park idle slots detached at `origin/<default>`, healing phantom dirt. |
 | `sync [slot...]` | Fetch and prune in every slot, and park the reference slot detached at `origin/<default>`. It does not update work slots or your branch: `refresh` advances idle slots, and a slot you hold is yours to rebase. Exits non-zero when a fetch fails or the reference is dirty. |
 | `prune [slot...]` | Delete merged local branches. |
 | `create <slot>` / `destroy <slot>` | Make or remove a slot through the provider. |
-| `doctor [slot...]` | Health checks. Exits 8 when any check fails, retaining checks in JSON error data. `--fix-env` provisions environments. |
+| `doctor [slot...]` | Health checks. Exits 8 when any check fails, retaining checks in JSON error data. `--fix-env` provisions environments. For worktree slots it fails `common-dir` when the admin dir is gone (the reference clone was re-cloned) and `worktree-link` when the admin dir's back-link points at a missing path, each with the fix. |
 | `tend [--check] [--dry-run]` | Run farm maintenance. Check mode reports only; dry-run previews changes. |
 | `tend schedule install\|uninstall\|status` | Register, remove, or inspect this config's user schedule. Supports `--dry-run`, `--json`. |
 | `submodules` | Update submodule pointers in a claimed slot, push, and open a PR. See below. |
@@ -35,12 +35,22 @@ human narrative goes to stderr, so piping to `jq` is always safe:
 
 The envelope is the stable interface. MCP is a convenience on top of it.
 
+Options a command does not take are refused with exit 2 (`EUSAGE`); they never
+become a lock reason or a slot name. `--` ends the options, so a reason may
+start with a dash: `agentws lock 3 -- -x flag cleanup`. Chain a command that
+needs the lock with `&&`, never `;`: after a refused claim or lock, `;` runs
+the next command in a slot you do not hold.
+
 ## Lock ownership
 
 Export `AGENTWS_PID=$$` (a shell that outlives the task) and
 `AGENTWS_OWNER="<harness>:<task>"` before claiming. The lock then goes stale the
 moment that process dies, instead of waiting out its TTL. `--force` exists on
-the CLI only, for a human who has confirmed an agent is gone.
+the CLI only, for a human who has confirmed an agent is gone. `--session ID` is
+the same as `--owner ID`; the MCP server's owner for a session is
+`<AGENTWS_OWNER_PREFIX>:<session>`, so pass that to share a lock between the
+CLI and MCP. After a restart, `agentws lock --takeover N` re-binds your lock to
+the new `AGENTWS_PID`.
 
 ## Configuration
 
@@ -67,7 +77,7 @@ the farm.
 |---|---|---|
 | `tend_interval_minutes` | `15` | Positive integer between maintenance runs, including intervals over 59 minutes. |
 | `tend_refresh` | `true` | Refresh safe idle slots. |
-| `tend_reap` | `false` | Recycle finished stale/unlocked slots, retaining reap's safety checks. |
+| `tend_reap` | `true` | Recycle a slot only when all hold: its lock is stale (owner process dead or TTL passed) or absent, its branch is merged into or gone from origin, its tree has no tracked or untracked change, and every commit is on origin or its content is already in `origin/<default>` (a squash merge). Anything else, including a stale lock that fails one of these, is reported and left for manual review with the lock untouched. |
 | `tend_fix_env` | `false` | Allow provider environment provisioning. |
 | `tend_self_update` | `false` | Run the managed-install update check during maintenance. |
 

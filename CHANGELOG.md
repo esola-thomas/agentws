@@ -6,6 +6,36 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- `claim --slot N` claims one specific slot with claim's refusals and output;
+  `workspace_claim` takes `slot`.
+- `lock --takeover N [reason]` re-binds a lock you already own to the current
+  `AGENTWS_PID` (and a new reason, if given) in one atomic rewrite, replacing
+  `unlock N; lock N` after a session restart; `workspace_lock` takes
+  `takeover`. It never takes another owner's lock.
+- `--session ID` is an alias of `--owner ID`.
+- `doctor` fails `worktree-link` when a worktree's admin dir points back at a
+  missing path, which the next `git worktree prune` would orphan, and prints
+  the `git worktree repair` command.
+
+### Changed
+
+- Unknown options are refused with exit 2 (`EUSAGE`) instead of being kept as
+  arguments, where `claim` made them the lock reason. `--` ends options, so a
+  reason may start with a dash. The MCP server always passes `--` before free
+  text.
+- `tend` reaps by default (`tend_reap: true`), and only a provably finished
+  slot: stale or no lock, branch merged into or gone from origin, no tracked or
+  untracked change, and every commit on origin or its content already in
+  `origin/<default>`, so squash-merged branches qualify. A stale lock that
+  fails any of these is left byte-for-byte as it was, and the tend problem
+  names the reason.
+- `recycle` takes over another owner's stale lock under the same rule;
+  `workspace_recycle` passes stale locks to it instead of refusing them.
+- When `recycle` cannot delete the task branch because another checkout has it,
+  it names that checkout (and its slot) and the command that frees it.
+
 ## [0.0.7] - 2026-11-13
 
 ### Changed

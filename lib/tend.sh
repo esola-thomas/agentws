@@ -113,27 +113,31 @@ _tend_park_reference() {
 }
 
 _tend_move() {
-  local s="$1" d="$2" action="$3" br target="origin/$AGENTWS_DEFAULT_BRANCH"
+  local s="$1" d="$2" action="$3" br target="origin/$AGENTWS_DEFAULT_BRANCH" why
   TEND_ACTION="skipped:race"; TEND_DETAIL="claim won the slot lock"
+  [ -n "$TEND_HELD" ] || _tend_save_stale "$s"
   cmd_lock "$s" maintenance >/dev/null 2>&1 || return 0
   TEND_HELD="$s"
   if [ "$action" = reference ]; then
     _tend_park_reference "$s" "$d" || TEND_RC=8
   elif [ "$action" = reap ]; then
-    # Recheck after acquisition; gone upstream alone never proves work is safe.
+    # Recheck under the lock: the slot may have changed since the scan.
     br="$(slot_current_branch "$s")"
     TEND_ACTION="skipped:unmerged"; TEND_DETAIL="$br"
-    if [ "$(slot_dirty_count "$s")" = 0 ] && [ -z "$(slot_submodule_unsafe "$s")" ] && \
-       git -C "$d" merge-base --is-ancestor HEAD "$target" 2>/dev/null; then
+    if why="$(slot_finished_safe "$s")" && [ -z "$(slot_submodule_unsafe "$s")" ]; then
       if git -C "$d" checkout --quiet --no-overwrite-ignore --detach "$target" >&2 && \
          _slot_reset_hook "$s" "$d" "$target" >&2; then
-        TEND_ACTION="reaped"; TEND_DETAIL="parked at $target"
+        TEND_ACTION="reaped"; TEND_DETAIL="$br $why, parked at $target"
+        [ -z "$TEND_STALE" ] || TEND_DETAIL="$TEND_DETAIL; stale lock of $(printf '%s\n' "$TEND_STALE" | sed -n 's/^owner=//p' | head -1) released"
+        # Proven above: every commit is on origin or its content is in $target.
         if [ -n "$br" ] && [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ]; then
-          git -C "$d" branch -d "$br" >&2 || true
+          git -C "$d" branch -D -- "$br" >/dev/null 2>&1 || true
         fi
       else
         TEND_ACTION="broken:reset"; TEND_DETAIL="${SLOT_RESET_DETAIL:-checkout failed}"; TEND_RC=8
       fi
+    else
+      TEND_DETAIL="$br: ${why:-submodules contain work}"
     fi
   elif [ "$action" != env ]; then
     if [ "$(slot_dirty_count "$s")" != 0 ]; then
@@ -159,13 +163,31 @@ _tend_move() {
   fi
   cmd_unlock "$s" >/dev/null 2>&1 || { TEND_RC=8; _tend_problem "$s: could not release maintenance lock"; }
   TEND_HELD=""
+  _tend_restore_stale "$s"
+}
+
+# Taking the maintenance lock replaces a stale one. It is kept, and put back
+# unless maintenance returned the slot to service, so a skipped reap leaves the
+# old lock for review exactly as it was.
+_tend_save_stale() { # _tend_save_stale <slot>
+  TEND_STALE=""
+  [ ! -f "$(lock_file "$1")" ] || TEND_STALE="$(cat "$(lock_file "$1")")"
+}
+
+_tend_restore_stale() { # _tend_restore_stale <slot>
+  [ -n "$TEND_STALE" ] || return 0
+  case "$TEND_ACTION" in
+    reaped|refreshed|unchanged) ;;
+    *) ( set -o noclobber; printf '%s\n' "$TEND_STALE" > "$(lock_file "$1")" ) 2>/dev/null || true ;;
+  esac
+  TEND_STALE=""
 }
 
 _tend_pass() (
-  local check="$1" end s d source="" fetch=ok env br dirty action state payload temp signature="" probe=""
+  local check="$1" end s d source="" fetch=ok env br dirty action state payload temp signature="" probe="" why=""
   local fingerprint="" previous="" cached_rc=0 start_ms
   local TEND_HELD="" TEND_SOURCE_OK="" TEND_WORKTREES="" TEND_HEALTH=""
-  local TEND_ACTION="" TEND_DETAIL="" TEND_RC=0
+  local TEND_ACTION="" TEND_DETAIL="" TEND_RC=0 TEND_STALE=""
   local TEND_PROBLEMS=() TEND_RECORDS=() health=() statuses=() branches=() environments=()
   export GIT_OPTIONAL_LOCKS=0
   OWNER=agentws-tend
@@ -246,7 +268,7 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
   for s in $AGENTWS_SLOTS; do
     d="$(provider_slot_path "$s")"; TEND_HEALTH="${health[$i]}"
     env="${environments[$i]}"; br="${branches[$i]}"; probe="${statuses[$i]}"; i=$((i + 1))
-    TEND_ACTION=""; TEND_DETAIL=""
+    TEND_ACTION=""; TEND_DETAIL=""; TEND_STALE=""
     if [ -n "$TEND_HEALTH" ]; then
       TEND_ACTION="broken:health"; TEND_DETAIL="$TEND_HEALTH"; TEND_RC=8
     elif lock_active "$s"; then
@@ -272,6 +294,7 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
         action=""
         if [ "$AGENTWS_PROVIDER" != worktree ] && \
            { slot_is_reference "$s" || [ -z "$br" ] || [ "$AGENTWS_TEND_REAP" -eq 1 ]; }; then
+          _tend_save_stale "$s"
           cmd_lock "$s" maintenance >/dev/null 2>&1 || {
             _tend_record "$s" skipped:race "claim won the slot lock" "$env"; continue;
           }
@@ -282,10 +305,12 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
           [ "$AGENTWS_TEND_REFRESH" -eq 1 ] && action=reference
         elif [ -n "$br" ]; then
           if [ "$br" != "$AGENTWS_DEFAULT_BRANCH" ] && [ "$AGENTWS_TEND_REAP" -eq 1 ] && \
-             git -C "$d" merge-base --is-ancestor HEAD "origin/$AGENTWS_DEFAULT_BRANCH" 2>/dev/null; then
+             why="$(slot_finished_safe "$s")"; then
             action=reap
           else
             TEND_ACTION="skipped:task-branch"; TEND_DETAIL="$br"
+            [ "$br" = "$AGENTWS_DEFAULT_BRANCH" ] || [ "$AGENTWS_TEND_REAP" -eq 0 ] || \
+              TEND_DETAIL="$br: $why"
           fi
         elif ! slot_parked "$s"; then
           TEND_ACTION="skipped:unmerged"; TEND_DETAIL="detached commits not in origin/$AGENTWS_DEFAULT_BRANCH"
@@ -312,6 +337,7 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
           cmd_unlock "$s" >/dev/null 2>&1 || TEND_RC=8
           TEND_HELD=""
         fi
+        _tend_restore_stale "$s"
         [ -n "$TEND_ACTION" ] || TEND_ACTION="skipped:disabled"
       fi
     fi
@@ -319,7 +345,7 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
       case "$TEND_ACTION" in
         skipped:*)
           if [ -f "$(lock_file "$s")" ] && lock_is_stale "$s"; then
-            _tend_problem "$s: stale lock left for manual review"
+            _tend_problem "$s: stale lock left for manual review${TEND_DETAIL:+ ($TEND_DETAIL)}"
           fi ;;
       esac
     fi
