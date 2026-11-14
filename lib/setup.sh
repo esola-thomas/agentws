@@ -211,7 +211,8 @@ _guard_lexical() ( # _guard_lexical <abs-path>; a subshell keeps IFS and set -f 
 # or as one segment of a ; && || | chain. Quoted strings are blanked first, so
 # a commit message that mentions one is not a match.
 _guard_bash() ( # _guard_bash <command>; a subshell keeps set -f here
-  cmd="$1" seg=""
+  seg="" segs=""
+  segs="$(printf '%s\n' "$1" | _guard_unquote | tr ';|&' '\n\n\n')"
   set -f
   while IFS= read -r seg; do
     # shellcheck disable=SC2086  # word splitting collapses whitespace on purpose
@@ -227,10 +228,27 @@ _guard_bash() ( # _guard_bash <command>; a subshell keeps set -f here
       return 0
     fi
   done <<EOF
-$(printf '%s\n' "$cmd" | sed -e "s/'[^']*'/Q/g" -e 's/"[^"]*"/Q/g' | tr ';|&' '\n\n\n')
+$segs
 EOF
   return 0
 )
+
+# One left-to-right scan: each quoted span, across lines, becomes Q.
+_guard_unquote() {
+  awk '
+    { n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (q == "") {
+          if (c == "\\") { printf "%s", substr($0, i, 2); i++ }
+          else if (c == "\047" || c == "\"") { q = c; printf "Q" }
+          else printf "%s", c
+        } else if (q == "\"" && c == "\\") i++
+        else if (c == q) q = ""
+      }
+      if (q == "") printf "\n"
+    }'
+}
 
 # --------------------------------------------------------------------- setup
 # setup_detected <harness>: its command is on PATH. Cursor also counts with only

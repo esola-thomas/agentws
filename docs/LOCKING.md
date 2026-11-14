@@ -276,9 +276,11 @@ so its problem text stays current; it decides only whether tend re-scans.
 
 They are written by core only, by an atomic rename, never through a symlink,
 and they never change the lock file or its format. Providers never write
-them. Releasing a lock deletes the checkpoint and the notice. A takeover by a
-different owner keeps the old checkpoint as the previous one, after the new
-lock has been written.
+them. Releasing a lock deletes the checkpoint and the notice first, while the
+lock still keeps the next holder out; if removing the lock then fails, the lock
+stays and only the advisory files are gone. A takeover by a different owner
+keeps the old checkpoint as the previous one, after the new lock has been
+written.
 
 The orphan state (`status`, `status --json` `orphaned`, `tend`) is computed
 from `lock_stale_reason` and the existing reap predicates. It adds no new

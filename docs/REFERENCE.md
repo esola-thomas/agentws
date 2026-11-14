@@ -73,8 +73,8 @@ directory is inside a slot, and then denies:
 - a write or edit to a path inside the reference slot;
 - a Bash command, or one segment of a `;`, `&&`, `||`, or `|` chain, that is
   exactly `git checkout <default-branch>`, or is `git reset --hard` with any
-  arguments. Quoted strings are blanked first, so a commit message that
-  mentions either is not a match.
+  arguments. Quoted strings, including ones that span lines, are blanked
+  first, so a commit message that mentions either is not a match.
 
 "Inside a slot" is decided by the session's directory, not by who holds the
 lock.
@@ -222,7 +222,7 @@ Every claim (plain, `--print-env`, `--json`, and MCP) then:
 ```
 agentws: you hold slot 3 (myrepo_3) for "fix the parser".
 Label everything you create outside this checkout with myrepo_3
-(databases, containers, temp dirs). Ports: base + 3.
+(databases, containers, temp dirs). Ports: your base port + 3.
 Slot environment:
   export DB_NAME=myrepo_test_3
 <lines from provider_claim_notice>
@@ -232,8 +232,9 @@ Checkpoint with: agentws checkpoint set --phase ... --pr ... --next ...
 A worker launched into the slot never claimed it, so the Claude Code
 session-start hook (`agentws hook session-start`) prints that slot's notice
 and checkpoint instead of the farm table when the session's directory is
-inside a slot that has a lock file, stale or not. A slot locked with `lock` rather than `claim` gets a
-one-line summary of the lock and label instead of a notice. Releasing the
+inside a slot that has a lock file, stale or not. A slot locked with `lock`
+rather than `claim` gets a one-line summary of the lock and label instead of
+a notice. Releasing the
 lock deletes the notice.
 
 ### Checkpoints
@@ -282,8 +283,8 @@ No lock, claim, or staleness decision reads a checkpoint. See
 A slot is orphaned when its lock is stale by the existing ladder
 (`process_dead` or `ttl`) and the slot still holds a task `reap` would not
 recycle: its branch is neither merged nor gone, or its tree has real changes.
-A stale lock on a parked, clean slot is not an orphan; that slot is simply
-claimable.
+A stale lock on a clean slot with no task commits (parked, or still on the
+default branch at a commit origin has) is not an orphan.
 
 - `status` shows `ORPHANED (process_dead): <phase> · <next>` from the
   checkpoint, or `no checkpoint; lock by <owner>`.

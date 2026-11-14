@@ -30,7 +30,7 @@ _cp_read() { # _cp_read <file> <key> -> value
 
 checkpoint_exists() { _cp_regular "$(checkpoint_path "$1" "${2-}")"; }
 
-# mv onto a directory, or a link to one, moves into it: remove a link, refuse a directory.
+# mv onto a directory, or a link to one, moves into it.
 _cp_clear_dest() { # _cp_clear_dest <dest>
   [ ! -L "$1" ] || rm -f "$1"
   [ ! -d "$1" ]
@@ -276,7 +276,7 @@ claim_notice() { # claim_notice <slot> <env-lines> <provider-lines>
   printf 'Label everything you create outside this checkout with %s\n' "$label"
   case "$s" in
     *[!0-9]*) printf '(databases, containers, temp dirs).\n' ;;
-    *) printf '(databases, containers, temp dirs). Ports: base + %s.\n' "$s" ;;
+    *) printf '(databases, containers, temp dirs). Ports: your base port + %s.\n' "$s" ;;
   esac
   if [ -n "$2" ]; then
     printf 'Slot environment:\n'

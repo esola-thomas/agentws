@@ -45,7 +45,7 @@ notice_file() { printf '%s/%s.notice' "$LOCKS" "$1"; }
   [[ "$out" != *"chatter"* ]]
   [[ "$err" == *'agentws: you hold slot 1 (proj_1) for "fix parser".'* ]]
   [[ "$err" == *"Label everything you create outside this checkout with proj_1"* ]]
-  [[ "$err" == *"Ports: base + 1."* ]]
+  [[ "$err" == *"Ports: your base port + 1."* ]]
   [[ "$err" == *"Test DB: test_1. Never edit shared config."* ]]
   [[ "$err" == *"export DB_NAME=db_1"* ]]
   [[ "$err" == *"Checkpoint with: agentws checkpoint set"* ]]
