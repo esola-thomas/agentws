@@ -63,6 +63,13 @@ slot_from_dir() { # slot_from_dir <physical-dir> -> slot id, rc 1 if none
   printf '%s' "$best"
 }
 
+# <top>_<slot> with anything outside [A-Za-z0-9_] replaced, so it is a valid
+# database, container, or directory name. Agents suffix shared machine
+# resources with it.
+slot_label() { # slot_label <slot>
+  printf '%s_%s' "$AGENTWS_TOP" "$1" | tr -c 'A-Za-z0-9_' '_'
+}
+
 # ------------------------------------------------------------------- probes
 # Each returns a value with a safe default, never an error, so a slot with a
 # broken checkout still produces a complete status row.
@@ -445,8 +452,8 @@ json_slot_obj() { # json_slot_obj <slot>
   [ "$dirty_state" = "broken" ] && warns="$(jjoin "$warns" '"git_state_unreadable"')"
   [ "$env" != "ready" ] && warns="$(jjoin "$warns" '"environment_not_ready"')"
 
-  printf '{"slot":%s,"name":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"checkpoint":%s,"warnings":[%s]}' \
-    "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$d")" "$(jstr "$role")" \
+  printf '{"slot":%s,"name":%s,"label":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"checkpoint":%s,"warnings":[%s]}' \
+    "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$(slot_label "$s")")" "$(jstr "$d")" "$(jstr "$role")" \
     "$(jbool "$(provider_slot_exists "$s" && echo 1 || echo 0)")" \
     "$(jstr "$br")" "$(jnum "$dirty")" "$(jstr "$dirty_state")" "$(jstr "$env")" \
     "$(if [ -n "$env_epoch" ]; then jnum "$env_epoch"; else printf 'null'; fi)" \

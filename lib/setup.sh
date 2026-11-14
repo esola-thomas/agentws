@@ -104,12 +104,16 @@ cmd_use() {
 }
 
 # ---------------------------------------------------------------------- hook
-# hook session-start: context for a new agent session. Silent and exit 0
-# whenever there is no farm, so it is safe to install globally.
+# hook session-start: context for a new agent session. Inside a locked slot it
+# is that slot's claim notice and checkpoint, which is how a worker that never
+# claimed learns its label and resume point; elsewhere it is the farm table.
+# Silent and exit 0 whenever there is no farm, so it is safe to install globally.
 cmd_hook() {
   case "${1:-}" in
     session-start)
       local out
+      out="$( ( config_load && provider_load && slot_context ) 2>/dev/null )" || out=""
+      if [ -n "$out" ]; then printf '%s\n' "$out"; return 0; fi
       ( config_load && provider_load && tend_notice ) 2>/dev/null || true
       out="$("$AGENTWS_BIN_DIR/agentws" free 2>/dev/null)" || return 0
       [ -n "$out" ] || return 0

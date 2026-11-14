@@ -1,4 +1,4 @@
-# checkpoint.sh - per-slot task checkpoints, kept beside the lock.
+# checkpoint.sh - per-slot task checkpoints and claim notices, kept beside the lock.
 #
 # Advisory data only. No liveness, staleness, or claimability decision reads
 # any file written here; see docs/LOCKING.md, "Checkpoints and notices".
@@ -9,6 +9,7 @@
 #   <slot>.checkpoint.prev  (and .prev.md) the last checkpoint a different
 #                           owner left behind when its stale lock was taken over
 #   <slot>.checkpoint.log   the last CHECKPOINT_LOG_LINES set/clear calls
+#   <slot>.notice           the claim notice for the agent working in the slot
 
 CHECKPOINT_FIELDS="phase pr next note"
 CHECKPOINT_LOG_LINES=50
@@ -254,5 +255,67 @@ cmd_checkpoint() {
         || printf '%s has no checkpoint\n' "$(slot_name "$s")"
       _checkpoint_print "$s" .prev "previous task" || true ;;
   esac
+  return 0
+}
+
+# ------------------------------------------------------------ claim notice
+# What a claim tells the agent that will work in the slot. Stored as
+# <lock_dir>/<slot>.notice so a worker that never claimed sees it at session
+# start. Released with the lock.
+claim_notice() { # claim_notice <slot> <env-lines> <provider-lines>
+  local s="$1" label
+  label="$(slot_label "$s")"
+  printf 'agentws: you hold slot %s (%s) for "%s".\n' "$s" "$label" "$(lock_read "$s" reason 2>/dev/null || true)"
+  printf 'Label everything you create outside this checkout with %s\n' "$label"
+  case "$s" in
+    *[!0-9]*) printf '(databases, containers, temp dirs).\n' ;;
+    *) printf '(databases, containers, temp dirs). Ports: base + %s.\n' "$s" ;;
+  esac
+  if [ -n "$2" ]; then
+    printf 'Slot environment:\n'
+    printf '%s\n' "$2" | sed 's/^/  /'
+  fi
+  [ -z "$3" ] || printf '%s\n' "$3"
+  printf 'Checkpoint with: agentws checkpoint set --phase ... --pr ... --next ...\n'
+}
+
+# `export K=V` lines as a JSON object. A value in sq-style single quotes or in
+# plain double quotes is unquoted; anything else is taken literally. Lines that
+# are not an export of a valid name are skipped. Never evaluated.
+claim_env_json() { # claim_env_json <lines>
+  local line k v out=""
+  while IFS= read -r line; do
+    case "$line" in 'export '*) line="${line#export }" ;; *) continue ;; esac
+    k="${line%%=*}"
+    [ "$k" != "$line" ] || continue
+    case "$k" in ''|[0-9]*|*[!A-Za-z0-9_]*) continue ;; esac
+    v="${line#*=}"
+    case "$v" in
+      "'"*"'") v="${v#?}"; v="${v%?}"; v="$(printf '%s' "$v" | sed "s/'\\\\''/'/g")" ;;
+      '"'*'"') v="${v#?}"; v="${v%?}" ;;
+    esac
+    out="${out:+$out,}$(jstr "$k"):$(jstr "$v")"
+  done <<EOF2
+$1
+EOF2
+  printf '{%s}' "$out"
+}
+
+# Session-start context for a session whose cwd is inside a locked slot: the
+# claim notice and the checkpoint. rc 1 when the cwd is in no locked slot.
+slot_context() {
+  local s n
+  s="$(slot_from_dir "$(pwd -P)")" || return 1
+  [ -f "$(lock_file "$s")" ] || return 1
+  n="$AGENTWS_LOCK_DIR/$s.notice"
+  if _cp_regular "$n"; then
+    cat "$n"
+  else
+    printf 'agentws: you are in slot %s (%s), locked by %s for "%s". Label shared resources with %s.\n' \
+      "$s" "$(slot_name "$s")" "$(lock_read "$s" owner)" "$(lock_read "$s" reason)" "$(slot_label "$s")"
+  fi
+  _checkpoint_print "$s" "" "Checkpoint" \
+    || printf 'No checkpoint yet. Record one at each milestone: agentws checkpoint set --phase ... --next ...\n'
+  _checkpoint_print "$s" .prev "Previous owner's checkpoint" || true
   return 0
 }

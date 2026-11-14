@@ -24,12 +24,26 @@ All notable changes to this project are recorded here. Format follows
   checkpoint; the last 50 calls are kept in `<slot>.checkpoint.log`.
   `status` shows `phase · PR`, `status --json` has a `checkpoint` object, and
   MCP has `workspace_checkpoint`. No lock or claim decision reads it.
+- Every slot has a label, `<top>_<slot>` (`label` in JSON,
+  `AGENTWS_LABEL` from `claim --print-env`), for naming databases,
+  containers, temp dirs, and ports outside the checkout.
+- Every claim prints a notice (label, port base, provider env and lines, how
+  to checkpoint) to stderr, returns it as `notice` in `claim --json`, and
+  stores it as `<lock_dir>/<slot>.notice`. Inside a locked slot,
+  `agentws hook session-start` prints that notice and the checkpoint instead
+  of the farm table, so a worker that never claimed sees them.
+- Provider hooks `provider_slot_claimed` (run once per claim; a failure is a
+  claim warning and never releases the lock) and `provider_claim_notice`
+  (extra notice lines). Both have defaults, so the provider API stays 1.
 - `doctor` fails `worktree-link` when a worktree's admin dir points back at a
   missing path, which the next `git worktree prune` would orphan, and prints
   the `git worktree repair` command.
 
 ### Changed
 
+- `provider_claim_env` is evaluated on every claim, not only `--print-env`,
+  and its `export K=V` lines are returned as the `claim_env` object of
+  `claim --json`.
 - Unknown options are refused with exit 2 (`EUSAGE`) instead of being kept as
   arguments, where `claim` made them the lock reason. `--` ends options, so a
   reason may start with a dash. The MCP server always passes `--` before free

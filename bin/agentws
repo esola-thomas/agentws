@@ -11,7 +11,8 @@
 #   agentws status                 all slots: branch, dirty, lock, claimable
 #   agentws free                   which slots are idle
 #   agentws claim "reason"         lock the first claimable slot, print its path
-#                                  (--slot N: that slot or a refusal)
+#                                  (--slot N: that slot or a refusal) and, on
+#                                  stderr, the claim notice with the slot label
 #   agentws lock <slot> "reason"   lock a specific slot
 #   agentws unlock <slot>          release your own lock
 #   agentws locks                  show all locks and their age
@@ -65,7 +66,7 @@
 #          --clean-untracked recycle: remove reported untracked files
 #          --force       act on a locked workspace anyway
 #          --json        machine-readable output
-#          --print-env   claim: emit shell assignments for eval
+#          --print-env   claim: emit shell assignments for eval (incl. AGENTWS_LABEL)
 #          --ignore-pid  disable process-liveness checks, use TTL only
 #          --config PATH use this .agentws.yml
 #          --            end of options: a reason may then start with a dash

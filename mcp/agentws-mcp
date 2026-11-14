@@ -213,7 +213,7 @@ tools_json() {
    "required":["session"]}},
 
  {"name":"workspace_claim",
-  "description":"Lock the first free workspace slot, preferring environment-ready slots, and return its path, environment state, and bootstrap hint. With slot, claim only that slot, with the same refusals.",
+  "description":"Lock the first free workspace slot, preferring environment-ready slots, and return its path, environment state, bootstrap hint, label (suffix for databases, containers, and temp dirs you create outside the checkout), notice, and claim_env. With slot, claim only that slot, with the same refusals.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session."},
     "reason":{"type":"string","description":"Short free text describing the task, shown to other agents."},

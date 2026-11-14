@@ -22,7 +22,13 @@ export AGENTWS_PID=$$                        # the shell that outlives the task
 export AGENTWS_OWNER="<harness>:<task>"      # e.g. claude:mc7-mission-home
 
 eval "$(agentws claim '<one-line task>' --print-env)"
-cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS
+cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS,
+                                             # AGENTWS_LABEL (e.g. myrepo_3)
+
+# 0. Read the claim notice (stderr). Suffix anything you create outside the
+#    checkout (databases, containers, temp dirs, ports) with AGENTWS_LABEL so
+#    parallel slots never share it. A worker inside the slot gets the same
+#    notice from the session-start hook.
 
 # 1. Bootstrap BEFORE the first build or test. The claim envelope carries a
 #    provider hint: agentws claim '<task>' --json | jq -r .data.bootstrap_hint

@@ -31,7 +31,7 @@ creation, and end-of-task cleanup.
 | Tool | Required arguments |
 |---|---|
 | `workspace_status` | `session` |
-| `workspace_claim` | `session`, `reason` (optional `session_pid`, `ttl`, `task_id`, `branch`, `agent`, `require_env`) |
+| `workspace_claim` | `session`, `reason` (optional `session_pid`, `ttl`, `task_id`, `branch`, `agent`, `require_env`, `slot`). The result carries `label`, `notice`, `claim_env` (the provider's exported variables), and `claim_warnings`. |
 | `workspace_lock` | `session`, `slot`, `reason` (optional `session_pid`, `ttl`, and structured metadata) |
 | `workspace_release` | `session`, `slot` |
 | `workspace_sync` | `session` (optional `slot`) |

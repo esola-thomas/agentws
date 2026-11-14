@@ -264,7 +264,7 @@ A format change also bumps `AGENTWS_LOCK_FORMAT` in `lib/lock.sh`, keeps
 
 `agentws checkpoint` writes `<slot>.checkpoint` (with `.checkpoint.md`,
 `.checkpoint.prev`, and `.checkpoint.log`) into the lock directory, beside
-the lock. These are advisory records for agents and humans. **No liveness,
+the lock, and `claim` writes the claim notice as `<slot>.notice`. These are advisory records for agents and humans. **No liveness,
 staleness, or claimability decision reads them.** `lock_owner_alive`,
 `lock_stale_reason`, `lock_is_stale`, `slot_claimable`, `slot_free`, and
 `slot_reap_state` never open them, and their presence, absence, contents, or
@@ -272,8 +272,8 @@ age cannot make a lock stale or a slot claimable. A checkpoint's age is shown
 as information only; it is never a liveness input.
 
 They are written by core only, by an atomic rename, never through a symlink,
-and they never change the lock file or its format. Releasing a lock deletes
-them. A takeover by a different owner keeps the old checkpoint as the
+and they never change the lock file or its format. Providers never write
+them. Releasing a lock deletes the checkpoint and the notice. A takeover by a different owner keeps the old checkpoint as the
 previous one, after the new lock has been written.
 
 ## The six-case matrix

@@ -171,22 +171,45 @@ _claim_slot_refusal() { # _claim_slot_refusal <slot>
 }
 
 # Lock <slot> for a claim and print the claim's stdout (path, env, or JSON).
+# Once the lock is written nothing here releases it or fails the claim: a
+# provider hook that fails becomes a warning.
 _claim_take() { # _claim_take <slot> <reason>
-  local s="$1" reason="$2" d
+  local s="$1" reason="$2" d rc envlines extra="" notice warns=() w
   d="$(provider_slot_path "$s")"
   if [ "${PRINT_ENV:-0}" -eq 1 ] || [ "${JSON:-0}" -eq 1 ]; then
     cmd_lock "$s" "$reason" >&2 || return
   else
     cmd_lock "$s" "$reason" || return
   fi
+
+  rc=0
+  [ "${DRY:-0}" -eq 1 ] || provider_slot_claimed "$s" "$d" >&2 || rc=$?
+  [ "$rc" -eq 0 ] || warns+=("provider $AGENTWS_PROVIDER: provider_slot_claimed failed (rc $rc); the lock is kept")
+  rc=0
+  envlines="$(provider_claim_env "$s" "$d")" || rc=$?
+  [ "$rc" -eq 0 ] || warns+=("provider $AGENTWS_PROVIDER: provider_claim_env failed (rc $rc)")
+  rc=0
+  extra="$(provider_claim_notice "$s" "$d")" || { rc=$?; extra=""; }
+  [ "$rc" -eq 0 ] || warns+=("provider $AGENTWS_PROVIDER: provider_claim_notice failed (rc $rc); its lines are left out")
+  notice="$(claim_notice "$s" "$envlines" "$extra")"
+  if [ "${DRY:-0}" -ne 1 ]; then
+    _cp_install "$AGENTWS_LOCK_DIR/$s.notice" printf '%s\n' "$notice" \
+      || warns+=("could not store the claim notice in $AGENTWS_LOCK_DIR")
+  fi
+  printf '%s\n' "$notice" >&2
+  for w in "${warns[@]+"${warns[@]}"}"; do printf 'agentws: warning: %s\n' "$w" >&2; done
+
   if [ "${JSON:-0}" -eq 1 ]; then
-    json_slot_obj "$s"
+    w="$(json_slot_obj "$s")"
+    printf '%s,"notice":%s,"claim_env":%s,"claim_warnings":[%s]}' "${w%?}" "$(jstr "$notice")" \
+      "$(claim_env_json "$envlines")" "$(_jstr_list "${warns[@]+"${warns[@]}"}")"
   elif [ "${PRINT_ENV:-0}" -eq 1 ]; then
     printf 'export AGENTWS_SLOT=%s\n' "$(sq "$s")"
     printf 'export AGENTWS_OWNER=%s\n' "$(sq "$OWNER")"
     printf 'export AGENTWS_WS=%s\n'    "$(sq "$d")"
     printf 'export WS=%s\n'            "$(sq "$d")"
-    provider_claim_env "$s" "$d"
+    printf 'export AGENTWS_LABEL=%s\n' "$(sq "$(slot_label "$s")")"
+    [ -z "$envlines" ] || printf '%s\n' "$envlines"
   else
     printf '%s\n' "$d"
   fi

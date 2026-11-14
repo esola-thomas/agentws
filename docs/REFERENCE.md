@@ -11,7 +11,7 @@
 | `version` | Installed version. |
 | `status` | Every slot: branch, dirty, lock, claimable, environment. |
 | `free` | Idle slots. |
-| `claim "reason"` | Lock the first claimable slot. `--print-env` for `eval`. `--slot N` claims that slot only, with the same refusals (held: exit 4; reference, excluded, dirty, or not parked: exit 5; unknown: exit 6) and the same output. |
+| `claim "reason"` | Lock the first claimable slot and print the claim notice to stderr (see Claim notice). `--print-env` for `eval`. `--slot N` claims that slot only, with the same refusals (held: exit 4; reference, excluded, dirty, or not parked: exit 5; unknown: exit 6) and the same output. |
 | `lock <slot> "reason"` / `unlock <slot>` | Lock or release a specific slot. `lock --takeover <slot> [reason]` re-binds a lock whose owner is yours to the current `AGENTWS_PID` and, if given, a new reason, in one atomic rewrite (use it after a session restart instead of `unlock` then `lock`). It never takes another owner's lock. |
 | `locks` | All locks with age and remaining TTL. |
 | `checkpoint set\|show\|clear [slot]` | Record or read where the task in a slot stands. `set` merges `--phase`, `--pr`, `--next`, `--note`, and `--body-file F`. The slot defaults to the one holding the current directory. See Checkpoints. |
@@ -155,6 +155,43 @@ never discards tracked changes. Claims can carry `--task-id`, `--branch`,
 `--agent`, and a `--ttl` capped by `ttl_hours`. `auto_release: true` lets
 `doctor` release a locked slot that stays clean and parked for
 `auto_release_minutes`.
+
+### Claim notice and slot label
+
+Every slot has a label, `<top>_<slot>` with anything outside `[A-Za-z0-9_]`
+replaced by `_` (`myrepo_3`). Use it as the suffix for anything the task
+creates outside the checkout but on the same machine: database names,
+container and compose project names, temp dirs, and ports (`base + 3`, for a
+numeric slot). `status --json` and `claim --json` carry it as `label`;
+`claim --print-env` exports `AGENTWS_LABEL`.
+
+Every claim (plain, `--print-env`, `--json`, and MCP) then:
+
+1. Calls the provider's `provider_slot_claimed <slot> <path>` once. A failure
+   is a warning (`claim_warnings` in JSON, `agentws: warning:` on stderr); the
+   lock is kept and the claim succeeds.
+2. Evaluates `provider_claim_env`. Its `export K=V` lines go to `--print-env`
+   as before and become the `claim_env` object in JSON (values are unquoted, never
+   evaluated).
+3. Prints the notice to stderr, returns it as `notice` in JSON, and stores it
+   as `<lock_dir>/<slot>.notice`:
+
+```
+agentws: you hold slot 3 (myrepo_3) for "fix the parser".
+Label everything you create outside this checkout with myrepo_3
+(databases, containers, temp dirs). Ports: base + 3.
+Slot environment:
+  export DB_NAME=myrepo_test_3
+<lines from provider_claim_notice>
+Checkpoint with: agentws checkpoint set --phase ... --pr ... --next ...
+```
+
+A worker launched into the slot never claimed it, so the Claude Code
+session-start hook (`agentws hook session-start`) prints that slot's notice
+and checkpoint instead of the farm table when the session's directory is
+inside a locked slot. A slot locked with `lock` rather than `claim` gets a
+one-line summary of the lock and label instead of a notice. Releasing the
+lock deletes the notice.
 
 ### Checkpoints
 
