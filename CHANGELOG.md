@@ -6,6 +6,18 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-11-13
+
+### Changed
+
+- The Claude plugin's `agentws` skill meets the plugin directory's policy
+  review: it no longer gives a headless dispatch recipe that skips permission
+  prompts, no longer forbids Claude's own tools, and no longer defers to a
+  contract fetched by URL; the parts of the contract an agent needs are in the
+  skill itself. The CLI-installed skill under `skills/` is unchanged.
+- The plugin README links the CLI install instructions instead of showing a
+  `curl | bash` line, and shows the one-step marketplace install command.
+
 ## [0.0.6] - 2026-10-28
 
 ### Changed

@@ -54,3 +54,19 @@ load helper
   run grep -RniE '(curl|wget)[^|]*[|][[:space:]]*(bash|sh)' "$skills"
   [ "$status" -ne 0 ]
 }
+
+# Software Directory Policy 1C, 2E, 2F: the plugin's skills may not tell Claude
+# to bypass permission prompts, forbid its own tools, or take instructions from
+# a remote file. The CLI-installed skills/ copy is not subject to this.
+@test "Claude plugin content passes the directory's policy review" {
+  local p="$AGENTWS_REPO_ROOT/claude-plugin"
+
+  run grep -RnE 'dangerously-skip-permissions|bypassPermissions|NODE_OPTIONS' "$p"
+  [ "$status" -ne 0 ]
+  run grep -RniE 'never[^.]*(run_in_background|Monitor|AskUserQuestion)' "$p/skills"
+  [ "$status" -ne 0 ]
+  run grep -RnE 'https?://' "$p/skills"
+  [ "$status" -ne 0 ]
+  run grep -RniE '(curl|wget)[^|]*[|][[:space:]]*(bash|sh)' "$p"
+  [ "$status" -ne 0 ]
+}
