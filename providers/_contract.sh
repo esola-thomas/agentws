@@ -16,7 +16,7 @@
 #   - Providers read ONLY the AGENTWS_P_* namespace, never the config file.
 #   - Forge-agnostic: plain git porcelain only, never a hosting-provider API.
 #
-# The contract is twelve functions: api_version plus the eleven hooks below.
+# The contract is fourteen functions: api_version plus the thirteen hooks below.
 
 # VALUE. Required. Core dies on a mismatch with AGENTWS_PROVIDER_API.
 provider_api_version() { printf '1'; }
@@ -63,8 +63,21 @@ provider_slot_reset() { # <slot> <abs-path> <ref>
 # Core dispatches `agentws <name>` to provider_cmd_<name>.
 provider_commands()     { printf ''; }
 
-# ACTION: extra `export K=V` lines appended to `agentws claim --print-env`.
+# ACTION: <slot> <abs-path>. Extra `export K=V` lines, evaluated on every
+# claim: appended to `claim --print-env`, returned as the `claim_env` object of
+# `claim --json`, and listed in the claim notice.
 provider_claim_env()    { :; }
+
+# ACTION: <slot> <abs-path>. Called once on every claim, after the lock is
+# written: project setup that belongs to the claim, such as creating a
+# per-slot database. Output goes to stderr. A non-zero rc is reported as a
+# claim warning; it never releases the lock and never fails the claim.
+provider_slot_claimed() { :; }
+
+# ACTION: <slot> <abs-path>. Extra lines for the claim notice, which a worker
+# inside the slot also sees at session start. A non-zero rc drops the lines
+# and adds a claim warning.
+provider_claim_notice() { :; }
 
 # VALUE: ready, missing, or stale. Checks must be fast enough for status.
 provider_env_check()    { printf 'ready'; }

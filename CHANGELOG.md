@@ -15,12 +15,46 @@ All notable changes to this project are recorded here. Format follows
   `unlock N; lock N` after a session restart; `workspace_lock` takes
   `takeover`. It never takes another owner's lock.
 - `--session ID` is an alias of `--owner ID`.
+- `checkpoint set|show|clear [slot]` records where a slot's task stands
+  (`--phase`, `--pr`, `--next`, `--note`, `--body-file`) in
+  `<lock_dir>/<slot>.checkpoint`, beside the lock and outside the checkout.
+  The slot defaults to the one holding the current directory, so a worker
+  that did not claim its slot can still checkpoint it. Releasing the lock
+  deletes it; a takeover by a different owner keeps it as the previous
+  checkpoint; the last 50 calls are kept in `<slot>.checkpoint.log`.
+  `status` shows `phase · PR`, `status --json` has a `checkpoint` object, and
+  MCP has `workspace_checkpoint`. No lock or claim decision reads it.
+- Every slot has a label, `<top>_<slot>` (`label` in JSON,
+  `AGENTWS_LABEL` from `claim --print-env`), for naming databases,
+  containers, temp dirs, and ports outside the checkout.
+- Every claim prints a notice (label, port base, provider env and lines, how
+  to checkpoint) to stderr, returns it as `notice` in `claim --json`, and
+  stores it as `<lock_dir>/<slot>.notice`. Inside a locked slot,
+  `agentws hook session-start` prints that notice and the checkpoint instead
+  of the farm table, so a worker that never claimed sees them.
+- Orphan state: a slot whose lock is stale by the existing ladder and whose
+  task is unfinished (branch neither merged nor gone, or real changes; see
+  REFERENCE.md for the exact rule) shows `ORPHANED (<reason>): <phase> ·
+  <next>` in `status`, `orphaned` and `orphan_reason` in `status --json`,
+  and a `tend` problem. Nothing is released or taken over. A lock without `owner_pid` shows its checkpoint
+  age in `status`, as information only.
+- `agentws hook pre-tool-use`, a Claude Code PreToolUse guard that
+  `agentws setup` installs next to the session-start hook. For a session
+  inside a slot it denies writes to another slot or the reference slot, and
+  `git checkout <default-branch>` and `git reset --hard`. Sessions outside
+  every slot are not guarded; no farm or no `jq` allows silently.
+- Provider hooks `provider_slot_claimed` (run once per claim; a failure is a
+  claim warning and never releases the lock) and `provider_claim_notice`
+  (extra notice lines). Both have defaults, so the provider API stays 1.
 - `doctor` fails `worktree-link` when a worktree's admin dir points back at a
   missing path, which the next `git worktree prune` would orphan, and prints
   the `git worktree repair` command.
 
 ### Changed
 
+- `provider_claim_env` is evaluated on every claim, not only `--print-env`,
+  and its `export K=V` lines are returned as the `claim_env` object of
+  `claim --json`.
 - Unknown options are refused with exit 2 (`EUSAGE`) instead of being kept as
   arguments, where `claim` made them the lock reason. `--` ends options, so a
   reason may start with a dash. The MCP server always passes `--` before free

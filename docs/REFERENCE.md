@@ -5,15 +5,17 @@
 | Command | What it does |
 |---|---|
 | `init [repo] [--slots N] [--root DIR]` | Create a farm for a checkout: `<repo>-ws/.agentws.yml` plus N worktree slots. The first farm becomes the default. |
-| `setup [harness...]` | Wire AI tools to this install. `--check`, `--remove`. Harnesses: `claude codex copilot cursor gemini all`. With no names, every tool whose command is on PATH (Cursor: `cursor`, `cursor-agent`, or a `~/.cursor` dir). An existing `AGENTWS_OWNER_PREFIX` on the agentws MCP entry is kept. `--check` shows `mcp:stale` for an entry that needs `agentws setup` again. |
+| `hook session-start\|pre-tool-use` | Claude Code hooks, installed by `setup`. See Hooks. |
+| `setup [harness...]` | Wire AI tools to this install. For Claude Code this includes the SessionStart and PreToolUse hooks. `--check`, `--remove`. Harnesses: `claude codex copilot cursor gemini all`. With no names, every tool whose command is on PATH (Cursor: `cursor`, `cursor-agent`, or a `~/.cursor` dir). An existing `AGENTWS_OWNER_PREFIX` on the agentws MCP entry is kept. `--check` shows `mcp:stale` for an entry that needs `agentws setup` again. |
 | `use [config]` | Make a farm the default, so agents find it from any directory. |
 | `update` | Update a managed install now. `--check` only reports. |
 | `version` | Installed version. |
 | `status` | Every slot: branch, dirty, lock, claimable, environment. |
 | `free` | Idle slots. |
-| `claim "reason"` | Lock the first claimable slot. `--print-env` for `eval`. `--slot N` claims that slot only, with the same refusals (held: exit 4; reference, excluded, dirty, or not parked: exit 5; unknown: exit 6) and the same output. |
+| `claim "reason"` | Lock the first claimable slot and print the claim notice to stderr (see Claim notice). `--print-env` for `eval`. `--slot N` claims that slot only, with the same refusals (held: exit 4; reference, excluded, dirty, or not parked: exit 5; unknown: exit 6) and the same output. |
 | `lock <slot> "reason"` / `unlock <slot>` | Lock or release a specific slot. `lock --takeover <slot> [reason]` re-binds a lock whose owner is yours to the current `AGENTWS_PID` and, if given, a new reason, in one atomic rewrite (use it after a session restart instead of `unlock` then `lock`). It never takes another owner's lock. |
 | `locks` | All locks with age and remaining TTL. |
+| `checkpoint set\|show\|clear [slot]` | Record or read where the task in a slot stands. `set` merges `--phase`, `--pr`, `--next`, `--note`, and `--body-file F`. The slot defaults to the one holding the current directory. See Checkpoints. |
 | `recycle <slot>` / `done <slot>` | After merge: fetch, park detached at `origin/<default>`, delete the task branch, release. Takes over another owner's lock only when it is stale and the slot is provably finished (see Maintenance). If another checkout still has the branch, it names that checkout and keeps the lock. |
 | `reap` | Recycle every slot with a stale or no lock, a branch gone upstream or merged into `origin/<default>`, and a clean tree (or only submodule lag). Never touches an active lock, the reference or excluded slots, or real uncommitted changes (listed and refused). Asks once; `--yes` skips it, `--dry-run` previews, `--json` needs one of them. |
 | `refresh [slot...]` | Park idle slots detached at `origin/<default>`, healing phantom dirt. |
@@ -51,6 +53,46 @@ the same as `--owner ID`; the MCP server's owner for a session is
 `<AGENTWS_OWNER_PREFIX>:<session>`, so pass that to share a lock between the
 CLI and MCP. After a restart, `agentws lock --takeover N` re-binds your lock to
 the new `AGENTWS_PID`.
+
+## Hooks
+
+`agentws setup claude` adds two command hooks to `~/.claude/settings.json`,
+found again by their `hook session-start` and `hook pre-tool-use` commands so
+re-running setup never duplicates them and `--remove` removes only them.
+
+`hook session-start` prints the farm table, or, when the session starts
+inside a locked slot, that slot's claim notice and checkpoint (see Claim
+notice). It is silent with exit 0 when there is no farm.
+
+`hook pre-tool-use` is a PreToolUse guard (matcher
+`Write|Edit|MultiEdit|NotebookEdit|Bash`). It applies only when the session's
+directory is inside a slot, and then denies:
+
+- a write or edit to a path inside another slot, resolved through `..` and
+  symlinks;
+- a write or edit to a path inside the reference slot;
+- a Bash command, or one segment of a `;`, `&&`, `||`, or `|` chain, that is
+  exactly `git checkout <default-branch>`, or is `git reset --hard` with any
+  arguments. Quoted strings, including ones that span lines, are blanked
+  first, so a commit message that mentions either is not a match.
+
+"Inside a slot" is decided by the session's directory, not by who holds the
+lock.
+
+Anything else is allowed silently, and so is everything when there is no
+farm, no `jq`, or input it cannot parse. A session outside every slot, such
+as an orchestrator writing briefs into slots it claimed, is never guarded.
+Command hooks fire under `--dangerously-skip-permissions` as well; this was
+checked with Claude Code 2.1.325, where the hook ran with
+`permission_mode: bypassPermissions` and its deny blocked the write.
+
+Limits: it is a contract guard, not a sandbox. Bash commands that write
+files, other spellings of the two git commands (`git -C`, `git reset HEAD
+--hard`, aliases, `git switch`), and harnesses other than Claude Code are
+not covered. An unmatched quote, or a `$'...'` string with an escaped quote,
+hides the rest of the command from the guard. Paths are normalised lexically
+(`a/link/../b` is `a/b`), as the editing tools do, before symlinks are
+resolved.
 
 ## Configuration
 
@@ -154,6 +196,112 @@ never discards tracked changes. Claims can carry `--task-id`, `--branch`,
 `--agent`, and a `--ttl` capped by `ttl_hours`. `auto_release: true` lets
 `doctor` release a locked slot that stays clean and parked for
 `auto_release_minutes`.
+
+### Claim notice and slot label
+
+Every slot has a label, `<top>_<slot>` (the config's `top` name and the slot
+id) with anything outside `[A-Za-z0-9_]` replaced by `_` (`myrepo_3`). Use it
+as the suffix for anything the task creates outside the checkout but on the
+same machine: database names, container and compose project names, temp
+dirs, and ports (your project's port base plus the slot number, for a
+numeric slot). `status --json` and `claim --json` carry it as `label`;
+`claim --print-env` exports `AGENTWS_LABEL`.
+
+Every claim (plain, `--print-env`, `--json`, and MCP) then:
+
+1. Calls the provider's `provider_slot_claimed <slot> <path>` once, in a
+   subshell (not under `--dry-run`). A failure is a warning
+   (`claim_warnings` in JSON, `agentws: warning:` on stderr); the lock is
+   kept and the claim succeeds. A failing `provider_claim_env` or
+   `provider_claim_notice`, or a notice that cannot be stored, is a warning
+   the same way.
+2. Evaluates `provider_claim_env`. Its `export K=V` lines go to `--print-env`
+   as before and become the `claim_env` object in JSON (values are unquoted,
+   never evaluated).
+3. Prints the notice to stderr, returns it as `notice` in JSON, and stores it
+   as `<lock_dir>/<slot>.notice` (not under `--dry-run`):
+
+```
+agentws: you hold slot 3 (myrepo_3) for "fix the parser".
+Label everything you create outside this checkout with myrepo_3
+(databases, containers, temp dirs). Ports: your base port + 3.
+Slot environment:
+  export DB_NAME=myrepo_test_3
+<lines from provider_claim_notice>
+Checkpoint with: agentws checkpoint set --phase ... --pr ... --next ...
+```
+
+A worker launched into the slot never claimed it, so the Claude Code
+session-start hook (`agentws hook session-start`) prints that slot's notice
+and checkpoint instead of the farm table when the session's directory is
+inside a slot that has a lock file, stale or not. A slot locked with `lock`
+rather than `claim` gets a one-line summary of the lock and label instead of
+a notice. Releasing the lock deletes the notice.
+
+### Checkpoints
+
+A checkpoint records where the task in a slot stands, so a resumed or
+replacement session can pick it up. It lives beside the lock, outside the
+checkout, so it is never a tracked file and survives a reboot:
+
+```bash
+agentws checkpoint set --phase review --pr https://example.invalid/pr/12 --next "address review"
+agentws checkpoint show            # the slot holding the current directory
+agentws checkpoint show 3 --json
+```
+
+- Fields: `phase`, `pr`, `next`, `note` (free text; newlines become spaces),
+  plus `branch`, `owner` (the lock's), and `updated` (epoch), which core
+  fills in. `--body-file F` stores up to 64 KiB of free text beside it.
+- `set` and `clear` need the slot to be locked, and the caller to be inside
+  the slot or to hold its lock. A worker launched into a slot its
+  orchestrator claimed is inside it, so it can checkpoint. `show` works for
+  anyone.
+- `set --phase ""` (any field, empty) clears that field. `clear` removes the
+  checkpoint, its body, and the previous one; the notice and the log stay.
+- Exit codes: 2 usage, 4 the slot is not locked or the caller may not write
+  it, 6 unknown slot or the current directory is in no slot, 9 unsupported
+  lock format. `--json` data is `{slot, name, checkpoint, previous}`, each
+  checkpoint `{phase, pr, next, note, branch, owner, updated, age_seconds,
+  has_body, body}` or `null`.
+- Writes are atomic renames; the last writer wins.
+- `unlock`, `recycle`, `reap`, `destroy`, and a `doctor` auto-release delete
+  the checkpoint. When a different owner takes over a stale lock, the old
+  checkpoint becomes the previous one (`checkpoint show` prints both; JSON
+  `previous`), one generation deep. The same owner retaking its own lock keeps
+  it. `tend`'s maintenance lock leaves it alone; it is deleted only when tend
+  returns the slot to service and does not put the stale lock back.
+- `<slot>.checkpoint.log` keeps the last 50 `set` and `clear` calls, across
+  tasks.
+- `status` shows `phase · PR` in the note column; `status --json` has a
+  `checkpoint` object or `null` per slot. MCP: `workspace_checkpoint`.
+
+No lock, claim, or staleness decision reads a checkpoint. See
+[LOCKING.md](LOCKING.md#checkpoints-and-notices).
+
+### Orphaned slots
+
+A slot is orphaned when its lock is stale by the existing ladder
+(`process_dead` or `ttl`) and the slot still holds a task `reap` would not
+recycle: its branch is neither merged nor gone, or its tree has real changes.
+A stale lock on a clean slot with no task commits (parked, or still on the
+default branch at a commit origin has) is not an orphan.
+
+- `status` shows `ORPHANED (process_dead): <phase> · <next>` from the
+  checkpoint, or `no checkpoint; lock by <owner>`.
+- `status --json` has `orphaned` (bool) and `orphan_reason`
+  (`process_dead`, `ttl`, or `null`) on every slot.
+- `tend` reports each orphan as a problem (a slot with a health problem is
+  reported as that instead).
+
+Nothing releases, takes over, or resumes an orphan on its own. Taking one
+over is an explicit `lock` by whoever resumes the task; the old checkpoint
+then becomes the previous one.
+
+A lock with no `owner_pid` (no `AGENTWS_PID` at claim time, or an MCP claim
+without `session_pid`) can only go stale by TTL. For those, `status` adds
+`last checkpoint 6h ago` to the lock note, as information for a human. It is
+never a liveness input.
 
 ### Broken worktrees
 

@@ -236,6 +236,7 @@ cmd_lock() (
   local has_reason=0; [ $# -eq 0 ] || has_reason=1
   local reason; reason="$(lock_sanitize "${*:-unspecified}")"
   local f; f="$(lock_file "$slot")"
+  local prev_owner=""
   provider_slot_exists "$slot" || die "$(slot_name "$slot") does not exist"
 
   mkdir -p "$AGENTWS_LOCK_DIR" 2>/dev/null
@@ -258,6 +259,7 @@ cmd_lock() (
     elif lock_is_stale "$slot"; then
       printf '%s stale lock from %s (%sh old), taking over\n' \
         "$(c_yel NOTE)" "$(lock_read "$slot" owner)" "$(lock_age_hours "$slot")"
+      prev_owner="$(lock_read "$slot" owner)"
       run rm -f "$f"
     elif lock_mine "$slot"; then
       printf '%s you already hold %s\n' "$(c_grn OK)" "$(slot_name "$slot")"
@@ -289,6 +291,7 @@ cmd_lock() (
   if ( set -o noclobber; printf '%s\n' "$record" > "$f" ) 2>/dev/null; then
     printf '%s locked %s as %s\n' "$(c_grn OK)" "$(slot_name "$slot")" "$OWNER"
     printf '   reason: %s\n' "$reason"
+    checkpoint_on_acquire "$slot" "$prev_owner"
   else
     printf '%s lost race for %s, now held by %s\n' "$(c_red BUSY)" "$(slot_name "$slot")" \
       "$(lock_read "$slot" owner 2>/dev/null)"
@@ -352,6 +355,8 @@ cmd_unlock() {
     printf '   Use --force if you are certain that agent is gone.\n'
     return 1
   fi
+  # Advisory files go first, while the lock still keeps the next holder out.
+  checkpoint_drop "$slot"
   run rm -f "$f" && printf '%s unlocked %s\n' "$(c_grn OK)" "$(slot_name "$slot")"
 }
 

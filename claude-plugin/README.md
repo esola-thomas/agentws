@@ -34,8 +34,8 @@ machine: Claude Code, or a Cowork session running on your computer. In a chat
 without a local shell the skills can explain agentws but cannot operate it.
 
 After installing the CLI, `agentws setup claude` optionally registers its MCP
-server and a session-start hook that shows the farm. Those come from the CLI,
-not from this plugin.
+server, a session-start hook that shows the farm, and a guard hook for
+sessions inside a slot. Those come from the CLI, not from this plugin.
 
 ## What the plugin runs, fetches, and sends
 

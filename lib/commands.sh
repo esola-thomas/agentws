@@ -28,7 +28,7 @@ cmd_status() {
     return 0
   fi
 
-  local d br dirty dirty_state env ab ahead behind note dirty_disp missing_names=""
+  local d br dirty dirty_state env ab ahead behind note dirty_disp cps cpa orphan missing_names=""
   printf '%-16s %-28s %-14s %-8s %-7s %s\n' "WORKSPACE" "BRANCH" "DIRTY" "ENV" "AHEAD" "NOTE"
   printf '%s\n' "------------------------------------------------------------------------------------------------"
   for s in $AGENTWS_SLOTS; do
@@ -42,7 +42,7 @@ cmd_status() {
     dirty_state="$(slot_dirty_state "$s")"
     env="$(slot_env_state "$s")"
     ab="$(slot_ahead_behind "$s")"; ahead="${ab%% *}"; behind="${ab##* }"
-    note=""
+    note=""; orphan=""
     [ -z "$(slot_upstream "$s")" ] && note="no upstream"
 
     if slot_is_reference "$s"; then
@@ -56,8 +56,24 @@ cmd_status() {
       note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), lock format $(lock_sanitize "$(lock_format "$s")") is not supported; run agentws update")"
     elif lock_active "$s"; then
       note="${note:+$note, }$(c_yel "LOCKED by $(lock_read "$s" owner), $(lock_remaining_display "$s") left")"
+      # Without owner_pid only the TTL can end this lock; the checkpoint age
+      # is shown for a human to judge, and never read as liveness.
+      if [ -z "$(lock_read "$s" owner_pid 2>/dev/null || true)" ] && \
+         cpa="$(checkpoint_age_seconds "$s")"; then
+        note="$note, last checkpoint $(_cp_age "$cpa") ago"
+      fi
     elif [ -f "$(lock_file "$s")" ]; then
-      note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
+      orphan="$(slot_orphan_reason "$s" || true)"
+      if [ -n "$orphan" ]; then
+        cps="$(checkpoint_summary "$s" next)"
+        note="${note:+$note, }$(c_red "ORPHANED ($orphan)"): ${cps:-no checkpoint; lock by $(lock_read "$s" owner)}"
+      else
+        note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
+      fi
+    fi
+    if [ -z "$orphan" ]; then
+      cps="$(checkpoint_summary "$s")"
+      [ -z "$cps" ] || note="${note:+$note, }$cps"
     fi
     [ "$(slot_reap_state "$s")" = "reap" ] && \
       note="${note:+$note, }$(c_yel "merged/gone: run agentws recycle $s")"
@@ -169,22 +185,46 @@ _claim_slot_refusal() { # _claim_slot_refusal <slot>
 }
 
 # Lock <slot> for a claim and print the claim's stdout (path, env, or JSON).
+# Once the lock is written nothing here releases it or fails the claim: a
+# provider hook that fails becomes a warning.
 _claim_take() { # _claim_take <slot> <reason>
-  local s="$1" reason="$2" d
+  local s="$1" reason="$2" d rc envlines extra="" notice warns=() w
   d="$(provider_slot_path "$s")"
   if [ "${PRINT_ENV:-0}" -eq 1 ] || [ "${JSON:-0}" -eq 1 ]; then
     cmd_lock "$s" "$reason" >&2 || return
   else
     cmd_lock "$s" "$reason" || return
   fi
+
+  rc=0
+  # A subshell, so a hook that exits or dies still cannot end the claim.
+  [ "${DRY:-0}" -eq 1 ] || ( provider_slot_claimed "$s" "$d" ) >&2 || rc=$?
+  [ "$rc" -eq 0 ] || warns+=("provider $AGENTWS_PROVIDER: provider_slot_claimed failed (rc $rc); the lock is kept")
+  rc=0
+  envlines="$(provider_claim_env "$s" "$d")" || rc=$?
+  [ "$rc" -eq 0 ] || warns+=("provider $AGENTWS_PROVIDER: provider_claim_env failed (rc $rc)")
+  rc=0
+  extra="$(provider_claim_notice "$s" "$d")" || { rc=$?; extra=""; }
+  [ "$rc" -eq 0 ] || warns+=("provider $AGENTWS_PROVIDER: provider_claim_notice failed (rc $rc); its lines are left out")
+  notice="$(claim_notice "$s" "$envlines" "$extra")"
+  if [ "${DRY:-0}" -ne 1 ]; then
+    _cp_install "$AGENTWS_LOCK_DIR/$s.notice" printf '%s\n' "$notice" \
+      || warns+=("could not store the claim notice in $AGENTWS_LOCK_DIR")
+  fi
+  printf '%s\n' "$notice" >&2
+  for w in "${warns[@]+"${warns[@]}"}"; do printf 'agentws: warning: %s\n' "$w" >&2; done
+
   if [ "${JSON:-0}" -eq 1 ]; then
-    json_slot_obj "$s"
+    w="$(json_slot_obj "$s")"
+    printf '%s,"notice":%s,"claim_env":%s,"claim_warnings":[%s]}' "${w%?}" "$(jstr "$notice")" \
+      "$(claim_env_json "$envlines")" "$(_jstr_list "${warns[@]+"${warns[@]}"}")"
   elif [ "${PRINT_ENV:-0}" -eq 1 ]; then
     printf 'export AGENTWS_SLOT=%s\n' "$(sq "$s")"
     printf 'export AGENTWS_OWNER=%s\n' "$(sq "$OWNER")"
     printf 'export AGENTWS_WS=%s\n'    "$(sq "$d")"
     printf 'export WS=%s\n'            "$(sq "$d")"
-    provider_claim_env "$s" "$d"
+    printf 'export AGENTWS_LABEL=%s\n' "$(sq "$(slot_label "$s")")"
+    [ -z "$envlines" ] || printf '%s\n' "$envlines"
   else
     printf '%s\n' "$d"
   fi
@@ -994,6 +1034,7 @@ cmd_destroy() {
 
   # The lock outlives the checkout otherwise, and would block the next create.
   if [ -f "$(lock_file "$slot")" ] && { lock_mine "$slot" || [ "${FORCE:-0}" -eq 1 ]; }; then
+    checkpoint_drop "$slot"
     run rm -f "$(lock_file "$slot")"
   fi
 
@@ -1034,6 +1075,7 @@ _auto_release_check() { # _auto_release_check <slot>
   now="$(date +%s)"; threshold=$((AGENTWS_AUTO_RELEASE_MINUTES * 60))
 
   if [ "$threshold" -eq 0 ]; then
+    checkpoint_drop "$s"
     if run rm -f "$(lock_file "$s")"; then
       [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
       AUTO_RELEASE_STATUS="pass"
@@ -1045,6 +1087,7 @@ _auto_release_check() { # _auto_release_check <slot>
   if [ "$seen_head" = "$head" ] && [[ "$seen_epoch" =~ ^[0-9]+$ ]]; then
     elapsed=$((now - seen_epoch))
     if [ "$elapsed" -ge "$threshold" ]; then
+      checkpoint_drop "$s"
       if run rm -f "$(lock_file "$s")"; then
         [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
         AUTO_RELEASE_STATUS="pass"
