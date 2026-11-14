@@ -34,7 +34,8 @@ about whether a slot is claimable: they call the same `slot_claimable`.
 | `lib/core.sh` | Colour, JSON escaping, `run`/`confirm`/`die`. `jq` with a sed fallback, so the core has no hard dependency. |
 | `lib/config.sh` | The single config parser. Strict-subset YAML to `AGENTWS_*` and `AGENTWS_P_*`. Loud on unrecognised syntax. |
 | `lib/lock.sh` | The lock ladder. See below and [LOCKING.md](LOCKING.md). |
-| `lib/slots.sh` | Slot naming, enumeration, role assignment, and the shared per-slot JSON object. |
+| `lib/slots.sh` | Slot naming, enumeration, role assignment, the slot holding a directory, and the shared per-slot JSON object. |
+| `lib/checkpoint.sh` | Per-slot checkpoints beside the lock. Advisory: no lock or claim decision reads them. |
 | `lib/provider.sh` | Loads contract defaults, then the chosen provider over them, then asserts `provider_api_version` is `1`. |
 | `lib/envelope.sh` | One JSON line on stdout under `--json`; human narrative always to stderr. Maps error codes to stable exit codes. |
 | `lib/commands.sh` | The command implementations. |

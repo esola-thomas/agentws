@@ -15,6 +15,15 @@ All notable changes to this project are recorded here. Format follows
   `unlock N; lock N` after a session restart; `workspace_lock` takes
   `takeover`. It never takes another owner's lock.
 - `--session ID` is an alias of `--owner ID`.
+- `checkpoint set|show|clear [slot]` records where a slot's task stands
+  (`--phase`, `--pr`, `--next`, `--note`, `--body-file`) in
+  `<lock_dir>/<slot>.checkpoint`, beside the lock and outside the checkout.
+  The slot defaults to the one holding the current directory, so a worker
+  that did not claim its slot can still checkpoint it. Releasing the lock
+  deletes it; a takeover by a different owner keeps it as the previous
+  checkpoint; the last 50 calls are kept in `<slot>.checkpoint.log`.
+  `status` shows `phase · PR`, `status --json` has a `checkpoint` object, and
+  MCP has `workspace_checkpoint`. No lock or claim decision reads it.
 - `doctor` fails `worktree-link` when a worktree's admin dir points back at a
   missing path, which the next `git worktree prune` would orphan, and prints
   the `git worktree repair` command.

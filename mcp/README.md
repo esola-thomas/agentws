@@ -25,8 +25,8 @@ the server is wrong.
 
 ## Tools
 
-Eleven tools cover acquisition, inspection, maintenance, creation, and
-end-of-task cleanup.
+Thirteen tools cover acquisition, inspection, checkpoints, maintenance,
+creation, and end-of-task cleanup.
 
 | Tool | Required arguments |
 |---|---|
@@ -42,6 +42,13 @@ end-of-task cleanup.
 | `workspace_recycle` | `session`, `slot` (optional `branch`, `clean_untracked`) |
 | `workspace_reap` | `session` (optional `confirm`; false previews) |
 | `workspace_done` | same as `workspace_recycle` |
+| `workspace_checkpoint` | `session`, `action` (`set`, `show`, `clear`; optional `slot`, and for `set`: `phase`, `pr`, `next`, `note`, `body`) |
+
+`workspace_checkpoint` without `slot` acts on the slot holding the server's
+working directory, which is the directory the harness started the server in.
+`set` and `clear` succeed when this session holds the slot's lock or the
+server runs inside the slot; see `checkpoint` in
+[REFERENCE.md](../docs/REFERENCE.md#checkpoints).
 
 Each returns one text content block holding the exact agentws envelope:
 

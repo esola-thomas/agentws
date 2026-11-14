@@ -69,9 +69,14 @@ cwd with the same env and flags; the work on disk is always intact.
    Monitor or task tools to wait, never end a turn saying what you will run
    next. A headless session dies when the turn ends; notifications never
    arrive.
-4. **Verify against CI's shape**, not a source checkout: same build artifact,
+4. **Checkpoint at each milestone**, from inside the slot:
+   `agentws checkpoint set --phase <phase> --pr <url> --next '<next step>'`
+   (MCP `workspace_checkpoint`). It lives beside the lock, not in the
+   checkout. On resume, `agentws checkpoint show` first; it also prints what a
+   dead previous owner left.
+5. **Verify against CI's shape**, not a source checkout: same build artifact,
    same pinned linter versions, `git status` clean after any formatter.
-5. **Finish** with the project's PR pipeline, or `STATUS: BLOCKED` after three
+6. **Finish** with the project's PR pipeline, or `STATUS: BLOCKED` after three
    failed fix iterations. Print the PR URL as the last line.
 
 ## Recycle (orchestrator, after merge)

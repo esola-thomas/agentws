@@ -34,6 +34,11 @@ cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS
 git checkout -b <branch> origin/<base>
 
 # 3. Work. Commit. Push. Open the PR the way the project says to.
+#    Checkpoint at each milestone, from inside the slot, so a resumed or
+#    replacement session knows where the task stands:
+agentws checkpoint set --phase '<phase>' --pr '<url>' --next '<next step>'
+agentws checkpoint show                      # on resume; also prints what a
+                                             # dead previous owner left
 
 # 4. After the PR merges (or when abandoning the task):
 agentws recycle "$AGENTWS_SLOT"              # fetch, park at origin/<default>,

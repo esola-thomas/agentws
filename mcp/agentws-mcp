@@ -297,6 +297,16 @@ tools_json() {
     "confirm":{"type":"boolean","description":"Recycle the listed slots. False only previews them."}},
    "required":["session"]}},
 
+ {"name":"workspace_checkpoint",
+  "description":"Read or record where the task in a slot stands: phase, PR, next step, note, and an optional free-text body. set merges the given fields; show also returns the checkpoint a previous owner left when its stale lock was taken over. set and clear need the slot to be locked, and this session to hold the lock or the server to run inside the slot. Advisory only: no lock or claim decision reads it.",
+  "inputSchema":{"type":"object","properties":{
+    "session":{"type":"string"},
+    "action":{"type":"string","enum":["set","show","clear"]},
+    "slot":{"type":"string","description":"Slot id or workspace name. Defaults to the slot holding the server's working directory."},
+    "phase":{"type":"string"},"pr":{"type":"string"},"next":{"type":"string"},"note":{"type":"string"},
+    "body":{"type":"string","description":"Free-text body, replacing any earlier one. set only."}},
+   "required":["session","action"]}},
+
  {"name":"workspace_done",
   "description":"Mark a merged task done by recycling its slot and releasing this session's lock.",
   "inputSchema":{"type":"object","properties":{
@@ -483,6 +493,32 @@ tool_call() { # tool_call <name> <arguments-json>
       call_args+=(-- "$slot")
       ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true
       if ! env_failed "$WS_OUT"; then held_drop "$sess" "$slot"; fi ;;
+
+    workspace_checkpoint)
+      local action bodyf="" k v
+      action="$(printf '%s' "$args" | jq -r '.action // empty')"
+      case "$action" in
+        set|show|clear) ;;
+        *) fail_tool "$name" EUSAGE "action must be set, show, or clear"; return 0 ;;
+      esac
+      call_args=(checkpoint --json)
+      if [ "$action" = set ]; then
+        for k in phase pr next note; do
+          if [ "$(printf '%s' "$args" | jq -r --arg k "$k" 'has($k)')" = true ]; then
+            v="$(printf '%s' "$args" | jq -r --arg k "$k" '.[$k] // "" | tostring')"
+            call_args+=("--$k" "$v")
+          fi
+        done
+        if [ "$(printf '%s' "$args" | jq -r 'has("body")')" = true ]; then
+          bodyf="$(mktemp "${TMPDIR:-/tmp}/agentws-mcp-body.XXXXXX")" || { fail_tool "$name" EFAIL "cannot create temp file"; return 0; }
+          printf '%s' "$args" | jq -j '.body // "" | tostring' > "$bodyf"
+          call_args+=(--body-file "$bodyf")
+        fi
+      fi
+      call_args+=(-- "$action")
+      [ -n "$slot" ] && call_args+=("$slot")
+      ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true
+      [ -z "$bodyf" ] || rm -f "$bodyf" ;;
 
     *)
       fail_tool "$name" ENOTFOUND "unknown tool $name"; return 0 ;;

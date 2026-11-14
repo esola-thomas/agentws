@@ -14,6 +14,7 @@
 | `claim "reason"` | Lock the first claimable slot. `--print-env` for `eval`. `--slot N` claims that slot only, with the same refusals (held: exit 4; reference, excluded, dirty, or not parked: exit 5; unknown: exit 6) and the same output. |
 | `lock <slot> "reason"` / `unlock <slot>` | Lock or release a specific slot. `lock --takeover <slot> [reason]` re-binds a lock whose owner is yours to the current `AGENTWS_PID` and, if given, a new reason, in one atomic rewrite (use it after a session restart instead of `unlock` then `lock`). It never takes another owner's lock. |
 | `locks` | All locks with age and remaining TTL. |
+| `checkpoint set\|show\|clear [slot]` | Record or read where the task in a slot stands. `set` merges `--phase`, `--pr`, `--next`, `--note`, and `--body-file F`. The slot defaults to the one holding the current directory. See Checkpoints. |
 | `recycle <slot>` / `done <slot>` | After merge: fetch, park detached at `origin/<default>`, delete the task branch, release. Takes over another owner's lock only when it is stale and the slot is provably finished (see Maintenance). If another checkout still has the branch, it names that checkout and keeps the lock. |
 | `reap` | Recycle every slot with a stale or no lock, a branch gone upstream or merged into `origin/<default>`, and a clean tree (or only submodule lag). Never touches an active lock, the reference or excluded slots, or real uncommitted changes (listed and refused). Asks once; `--yes` skips it, `--dry-run` previews, `--json` needs one of them. |
 | `refresh [slot...]` | Park idle slots detached at `origin/<default>`, healing phantom dirt. |
@@ -154,6 +155,40 @@ never discards tracked changes. Claims can carry `--task-id`, `--branch`,
 `--agent`, and a `--ttl` capped by `ttl_hours`. `auto_release: true` lets
 `doctor` release a locked slot that stays clean and parked for
 `auto_release_minutes`.
+
+### Checkpoints
+
+A checkpoint records where the task in a slot stands, so a resumed or
+replacement session can pick it up. It lives beside the lock, outside the
+checkout, so it is never a tracked file and survives a reboot:
+
+```bash
+agentws checkpoint set --phase review --pr https://example.invalid/pr/12 --next "address review"
+agentws checkpoint show            # the slot holding the current directory
+agentws checkpoint show 3 --json
+```
+
+- Fields: `phase`, `pr`, `next`, `note` (free text; newlines become spaces),
+  plus `branch`, `owner` (the lock's), and `updated` (epoch), which core
+  fills in. `--body-file F` stores up to 64 KiB of free text beside it.
+- `set` and `clear` need the slot to be locked, and the caller to be inside
+  the slot or to hold its lock. A worker launched into a slot its
+  orchestrator claimed is inside it, so it can checkpoint. `show` works for
+  anyone.
+- Writes are atomic renames; the last writer wins.
+- `unlock`, `recycle`, `reap`, `destroy`, and a `doctor` auto-release delete
+  the checkpoint. When a different owner takes over a stale lock, the old
+  checkpoint becomes the previous one (`checkpoint show` prints both; JSON
+  `previous`), one generation deep. The same owner retaking its own lock keeps
+  it. `tend`'s maintenance lock leaves it alone; it is deleted only when tend
+  returns the slot to service and does not put the stale lock back.
+- `<slot>.checkpoint.log` keeps the last 50 `set` and `clear` calls, across
+  tasks.
+- `status` shows `phase · PR` in the note column; `status --json` has a
+  `checkpoint` object or `null` per slot. MCP: `workspace_checkpoint`.
+
+No lock, claim, or staleness decision reads a checkpoint. See
+[LOCKING.md](LOCKING.md#checkpoints-and-notices).
 
 ### Broken worktrees
 

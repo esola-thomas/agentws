@@ -49,6 +49,20 @@ slot_resolve() { # slot_resolve <arg> -> slot id, rc 1 if no match
   return 1
 }
 
+# The slot whose checkout holds <dir>, compared by physical path so a symlinked
+# cwd still matches. The deepest slot wins if checkouts are nested.
+slot_from_dir() { # slot_from_dir <physical-dir> -> slot id, rc 1 if none
+  local dir="$1" s p best="" len=0
+  for s in $AGENTWS_SLOTS; do
+    p="$(cd "$(provider_slot_path "$s")" 2>/dev/null && pwd -P)" || continue
+    case "$dir/" in
+      "$p/"*) if [ "${#p}" -gt "$len" ]; then best="$s"; len="${#p}"; fi ;;
+    esac
+  done
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+
 # ------------------------------------------------------------------- probes
 # Each returns a value with a safe default, never an error, so a slot with a
 # broken checkout still produces a complete status row.
@@ -431,7 +445,7 @@ json_slot_obj() { # json_slot_obj <slot>
   [ "$dirty_state" = "broken" ] && warns="$(jjoin "$warns" '"git_state_unreadable"')"
   [ "$env" != "ready" ] && warns="$(jjoin "$warns" '"environment_not_ready"')"
 
-  printf '{"slot":%s,"name":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"warnings":[%s]}' \
+  printf '{"slot":%s,"name":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"checkpoint":%s,"warnings":[%s]}' \
     "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$d")" "$(jstr "$role")" \
     "$(jbool "$(provider_slot_exists "$s" && echo 1 || echo 0)")" \
     "$(jstr "$br")" "$(jnum "$dirty")" "$(jstr "$dirty_state")" "$(jstr "$env")" \
@@ -441,5 +455,5 @@ json_slot_obj() { # json_slot_obj <slot>
     "$(if [ -n "$up" ]; then jstr "$up"; else printf 'null'; fi)" \
     "$(jbool "$(slot_free "$s" && echo 1 || echo 0)")" \
     "$(jbool "$(slot_claimable "$s" && echo 1 || echo 0)")" \
-    "$(json_lock_obj "$s")" "$warns"
+    "$(json_lock_obj "$s")" "$(json_checkpoint_obj "$s")" "$warns"
 }

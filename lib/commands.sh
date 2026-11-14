@@ -28,7 +28,7 @@ cmd_status() {
     return 0
   fi
 
-  local d br dirty dirty_state env ab ahead behind note dirty_disp missing_names=""
+  local d br dirty dirty_state env ab ahead behind note dirty_disp cps missing_names=""
   printf '%-16s %-28s %-14s %-8s %-7s %s\n' "WORKSPACE" "BRANCH" "DIRTY" "ENV" "AHEAD" "NOTE"
   printf '%s\n' "------------------------------------------------------------------------------------------------"
   for s in $AGENTWS_SLOTS; do
@@ -59,6 +59,8 @@ cmd_status() {
     elif [ -f "$(lock_file "$s")" ]; then
       note="${note:+$note, }$(c_dim "stale lock ($(lock_read "$s" owner))")"
     fi
+    cps="$(checkpoint_summary "$s")"
+    [ -z "$cps" ] || note="${note:+$note, }$cps"
     [ "$(slot_reap_state "$s")" = "reap" ] && \
       note="${note:+$note, }$(c_yel "merged/gone: run agentws recycle $s")"
 
@@ -994,7 +996,7 @@ cmd_destroy() {
 
   # The lock outlives the checkout otherwise, and would block the next create.
   if [ -f "$(lock_file "$slot")" ] && { lock_mine "$slot" || [ "${FORCE:-0}" -eq 1 ]; }; then
-    run rm -f "$(lock_file "$slot")"
+    run rm -f "$(lock_file "$slot")" && checkpoint_drop "$slot"
   fi
 
   if [ "${JSON:-0}" -eq 1 ]; then
@@ -1035,6 +1037,7 @@ _auto_release_check() { # _auto_release_check <slot>
 
   if [ "$threshold" -eq 0 ]; then
     if run rm -f "$(lock_file "$s")"; then
+      checkpoint_drop "$s"
       [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
       AUTO_RELEASE_STATUS="pass"
       AUTO_RELEASE_DETAIL="released finished slot after 0 quiet minute(s)"
@@ -1046,6 +1049,7 @@ _auto_release_check() { # _auto_release_check <slot>
     elapsed=$((now - seen_epoch))
     if [ "$elapsed" -ge "$threshold" ]; then
       if run rm -f "$(lock_file "$s")"; then
+        checkpoint_drop "$s"
         [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
         AUTO_RELEASE_STATUS="pass"
         AUTO_RELEASE_DETAIL="released finished slot after $AGENTWS_AUTO_RELEASE_MINUTES quiet minute(s)"

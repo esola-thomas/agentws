@@ -15,6 +15,10 @@
 #   agentws lock <slot> "reason"   lock a specific slot
 #   agentws unlock <slot>          release your own lock
 #   agentws locks                  show all locks and their age
+#   agentws checkpoint set [slot]  record where the task stands (--phase, --pr,
+#                                  --next, --note, --body-file); slot defaults
+#                                  to the one holding the current directory
+#   agentws checkpoint show|clear [slot]
 #   agentws sync [slot...]         fetch + prune; park the reference slot at origin/<default>.
 #                                  Never moves a work slot (refresh advances idle ones)
 #   agentws prune [slot...]        delete merged local branches, after listing them
@@ -53,6 +57,8 @@
 #          --agent NAME  structured agent/model description stored on a claim
 #          --slot N      claim: this slot only, with the same refusals as claim
 #          --takeover    lock: re-bind your own lock to this session pid and reason
+#          --phase P, --pr URL, --next TEXT, --note TEXT, --body-file F
+#                        checkpoint set: fields to merge into the checkpoint
 #          --require-env claim only an environment-ready slot
 #          --with-env    create: provision the environment after checkout creation
 #          --fix-env     doctor: provision missing or stale environments
@@ -111,6 +117,12 @@ CLAIM_BRANCH=""
 CLAIM_AGENT=""
 CLAIM_SLOT=""
 TAKEOVER=0
+CP_GIVEN=0
+CP_PHASE=""; CP_PHASE_SET=0
+CP_PR="";    CP_PR_SET=0
+CP_NEXT="";  CP_NEXT_SET=0
+CP_NOTE="";  CP_NOTE_SET=0
+CP_BODY_FILE=""
 
 # shellcheck source=../lib/core.sh
 . "$AGENTWS_LIB_DIR/core.sh"
@@ -122,6 +134,8 @@ TAKEOVER=0
 . "$AGENTWS_LIB_DIR/provider.sh"
 # shellcheck source=../lib/slots.sh
 . "$AGENTWS_LIB_DIR/slots.sh"
+# shellcheck source=../lib/checkpoint.sh
+. "$AGENTWS_LIB_DIR/checkpoint.sh"
 # shellcheck source=../lib/envelope.sh
 . "$AGENTWS_LIB_DIR/envelope.sh"
 # shellcheck source=../lib/commands.sh
@@ -162,6 +176,11 @@ while [ $# -gt 0 ]; do
     --agent)      [ $# -ge 2 ] || die "--agent needs a value"; CLAIM_AGENT="$2"; shift 2 ;;
     --slot)       [ $# -ge 2 ] || die "--slot needs a slot"; CLAIM_SLOT="$2"; shift 2 ;;
     --takeover)   TAKEOVER=1; shift ;;
+    --phase)      [ $# -ge 2 ] || die "--phase needs a value"; CP_PHASE="$2"; CP_PHASE_SET=1; CP_GIVEN=1; shift 2 ;;
+    --pr)         [ $# -ge 2 ] || die "--pr needs a value"; CP_PR="$2"; CP_PR_SET=1; CP_GIVEN=1; shift 2 ;;
+    --next)       [ $# -ge 2 ] || die "--next needs a value"; CP_NEXT="$2"; CP_NEXT_SET=1; CP_GIVEN=1; shift 2 ;;
+    --note)       [ $# -ge 2 ] || die "--note needs a value"; CP_NOTE="$2"; CP_NOTE_SET=1; CP_GIVEN=1; shift 2 ;;
+    --body-file)  [ $# -ge 2 ] || die "--body-file needs a path"; CP_BODY_FILE="$2"; CP_GIVEN=1; shift 2 ;;
     --config)     [ $# -ge 2 ] || die "--config needs a path"; AGENTWS_CONFIG="$2"; shift 2 ;;
     --root)       [ $# -ge 2 ] || die "--root needs a path"; INIT_ROOT="$2"; shift 2 ;;
     --slots)      [ $# -ge 2 ] || die "--slots needs a number"; INIT_SLOTS="$2"; shift 2 ;;
@@ -194,6 +213,8 @@ opts_check() { # opts_check <command>
   set +f
   [ -z "$CLAIM_SLOT" ] || [ "$1" = claim ] || opts_refuse "$1" "--slot applies only to claim"
   [ "$TAKEOVER" -eq 0 ] || [ "$1" = lock ] || opts_refuse "$1" "--takeover applies only to lock"
+  [ "$CP_GIVEN" -eq 0 ] || [ "$1" = checkpoint ] || \
+    opts_refuse "$1" "--phase, --pr, --next, --note and --body-file apply only to checkpoint set"
 }
 
 opts_refuse() { # opts_refuse <command> <message>: exit 2 (EUSAGE)
@@ -224,7 +245,7 @@ esac
 # Provider commands parse their own options; core ones are checked before the
 # config is read, so a bad flag is reported even when the config is missing.
 case "${1:-status}" in
-  status|free|claim|sync|prune|refresh|recycle|done|reap|create|destroy|doctor|tend|submodules|locks|config|lock|unlock|help)
+  status|free|claim|sync|prune|refresh|recycle|done|reap|create|destroy|doctor|tend|submodules|locks|config|lock|unlock|checkpoint|help)
     opts_check "${1:-status}" ;;
 esac
 
@@ -254,6 +275,7 @@ case "$CMD" in
   tend)     envelope_run tend    cmd_tend    "$@" ;;
   submodules) envelope_run submodules cmd_submodules "$@" ;;
   locks)    envelope_run locks   cmd_locks   "$@" ;;
+  checkpoint) envelope_run checkpoint cmd_checkpoint "$@" ;;
   config)   envelope_run config  cmd_config  "$@" ;;
   lock)
     if [ "$JSON" -eq 1 ]; then envelope_run lock cmd_lock_json "$@"

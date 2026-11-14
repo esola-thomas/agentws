@@ -177,7 +177,7 @@ _tend_save_stale() { # _tend_save_stale <slot>
 _tend_restore_stale() { # _tend_restore_stale <slot>
   [ -n "$TEND_STALE" ] || return 0
   case "$TEND_ACTION" in
-    reaped|refreshed|unchanged) ;;
+    reaped|refreshed|unchanged) CHECKPOINT_HOLD=0 checkpoint_drop "$1" ;;
     *) ( set -o noclobber; printf '%s\n' "$TEND_STALE" > "$(lock_file "$1")" ) 2>/dev/null || true ;;
   esac
   TEND_STALE=""
@@ -194,6 +194,9 @@ _tend_pass() (
   AGENTWS_PID=$$
   TTL_OVERRIDE=1
   FORCE=0
+  # The maintenance lock is not a task: a checkpoint it displaces is kept for
+  # the stale lock put back afterwards (_tend_restore_stale).
+  CHECKPOINT_HOLD=1
   start_ms="$(_tend_milliseconds)"
   state="$AGENTWS_ROOT/.agentws"
   if [ "$check" -eq 0 ]; then
