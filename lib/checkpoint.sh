@@ -30,8 +30,7 @@ _cp_read() { # _cp_read <file> <key> -> value
 
 checkpoint_exists() { _cp_regular "$(checkpoint_path "$1" "${2-}")"; }
 
-# Clear <dest> for a rename. mv onto a directory, or a symlink to one, moves
-# into it, so a link is removed and a directory refused.
+# mv onto a directory, or a link to one, moves into it: remove a link, refuse a directory.
 _cp_clear_dest() { # _cp_clear_dest <dest>
   [ ! -L "$1" ] || rm -f "$1"
   [ ! -d "$1" ]

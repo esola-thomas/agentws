@@ -166,7 +166,7 @@ hook_guard() { # hook_guard <hook-input-json>
         printf 'deny:%s is in the reference slot %s (%s), which is read-only. Work in the slot you hold.\n' \
           "$path" "$target" "$(slot_name "$target")"
       elif [ "$target" != "$mine" ]; then
-        printf 'deny:%s is in slot %s (%s), but this session works in slot %s (%s). Edit only the slot you are in; another task holds that one.\n' \
+        printf 'deny:%s is in slot %s (%s), but this session works in slot %s (%s). Edit only the slot you are in.\n' \
           "$path" "$target" "$(slot_name "$target")" "$mine" "$(slot_name "$mine")"
       fi ;;
     Bash) _guard_bash "$cmd" ;;
@@ -208,7 +208,8 @@ _guard_lexical() ( # _guard_lexical <abs-path>; a subshell keeps IFS and set -f 
 )
 
 # The two git commands the contract forbids inside a slot, as a whole command
-# or as one segment of a ; && || | chain.
+# or as one segment of a ; && || | chain. Quoted strings are blanked first, so
+# a commit message that mentions one is not a match.
 _guard_bash() ( # _guard_bash <command>; a subshell keeps set -f here
   cmd="$1" seg=""
   set -f
@@ -226,7 +227,7 @@ _guard_bash() ( # _guard_bash <command>; a subshell keeps set -f here
       return 0
     fi
   done <<EOF
-$(printf '%s\n' "$cmd" | tr ';|&' '\n\n\n')
+$(printf '%s\n' "$cmd" | sed -e "s/'[^']*'/Q/g" -e 's/"[^"]*"/Q/g' | tr ';|&' '\n\n\n')
 EOF
   return 0
 )

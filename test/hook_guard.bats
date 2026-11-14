@@ -81,12 +81,15 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
   denied
   guard "$ROOT/1_proj" Bash command "git reset --hard HEAD -- extra args"
   denied
+  guard "$ROOT/1_proj" Bash command "git reset --hard \"origin/main\""
+  denied
 }
 
 @test "other git commands in a slot are allowed" {
   local c
   for c in "git checkout -b feat/x origin/main" "git checkout main -- README" "git status" \
-           "git reset HEAD README" "echo git reset" "git checkout other"; do
+           "git reset HEAD README" "echo git reset" "git checkout other" \
+           "git commit -m \"x; git reset --hard y\"" "git commit -m 'undo | git checkout main'"; do
     guard "$ROOT/1_proj" Bash command "$c"
     allowed
   done

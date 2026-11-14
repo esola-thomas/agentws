@@ -270,7 +270,9 @@ claimability decision reads them.** `lock_owner_alive`,
 `lock_stale_reason`, `lock_is_stale`, `slot_claimable`, `slot_free`, and
 `slot_reap_state` never open them, and their presence, absence, contents, or
 age cannot make a lock stale or a slot claimable. A checkpoint's age is shown
-as information only; it is never a liveness input.
+as information only; it is never a liveness input. The only other reader is
+`tend`'s change-detection fingerprint, which includes the checkpoint summary
+so its problem text stays current; it decides only whether tend re-scans.
 
 They are written by core only, by an atomic rename, never through a symlink,
 and they never change the lock file or its format. Providers never write

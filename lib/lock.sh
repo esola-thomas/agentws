@@ -355,9 +355,9 @@ cmd_unlock() {
     printf '   Use --force if you are certain that agent is gone.\n'
     return 1
   fi
-  run rm -f "$f" || return
+  # Advisory files go first, while the lock still keeps the next holder out.
   checkpoint_drop "$slot"
-  printf '%s unlocked %s\n' "$(c_grn OK)" "$(slot_name "$slot")"
+  run rm -f "$f" && printf '%s unlocked %s\n' "$(c_grn OK)" "$(slot_name "$slot")"
 }
 
 cmd_locks() {

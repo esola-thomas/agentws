@@ -219,7 +219,9 @@ probe() { # probe <slot> -> "claimable free stale reap"
   run agentws checkpoint set --phase safe --body-file "$SANDBOX/body"
   [ "$status" -eq 0 ]
   [ "$(cat "$SANDBOX/victim")" = victim ]
-  [ ! -L "$(cp_file 1)" ] && [ ! -L "$(cp_file 1 .log)" ] && [ ! -L "$(cp_file 1 .md)" ]
+  [ ! -L "$(cp_file 1)" ]
+  [ ! -L "$(cp_file 1 .log)" ]
+  [ ! -L "$(cp_file 1 .md)" ]
   [ "$(sed -n 's/^phase=//p' "$(cp_file 1)")" = safe ]
   [ -z "$(find "$LOCKS" -name '.cp.*')" ]
 }
@@ -231,7 +233,8 @@ probe() { # probe <slot> -> "claimable free stale reap"
   ln -s "$SANDBOX/victimdir" "$(cp_file 1 .log)"
   (cd "$ROOT/1_proj" && agentws checkpoint set --phase safe >/dev/null)
   [ -z "$(ls -A "$SANDBOX/victimdir")" ]
-  [ -f "$(cp_file 1)" ] && [ ! -L "$(cp_file 1)" ]
+  [ -f "$(cp_file 1)" ]
+  [ ! -L "$(cp_file 1)" ]
 
   # The same for the previous generation on a takeover.
   agentws unlock 1 >/dev/null
@@ -260,6 +263,57 @@ probe() { # probe <slot> -> "claimable free stale reap"
   (cd "$ROOT/3_proj" && agentws checkpoint set --phase c >/dev/null)
   [ -f "$(cp_file 3)" ]
   run agentws reap --yes
+  [ "$status" -eq 0 ]
+  [ ! -e "$(lock_path 3)" ]
+  [ ! -e "$(cp_file 3)" ]
+}
+
+@test "unlock drops the advisory files before the lock, so the next holder's survive" {
+  agentws lock 1 work >/dev/null
+  (cd "$ROOT/1_proj" && agentws checkpoint set --phase mine >/dev/null)
+  # rm shim: right after the lock file goes, a second holder writes its notice
+  # and checkpoint, as a claim racing in at that moment would.
+  local real_rm; real_rm="$(command -v rm)"
+  mkdir -p "$SANDBOX/shim"
+  cat > "$SANDBOX/shim/rm" <<SH
+#!/usr/bin/env bash
+"$real_rm" "\$@"; rc=\$?
+case " \$* " in *" $LOCKS/1.lock "*)
+  printf 'next holder\n' > "$LOCKS/1.notice"
+  printf 'phase=theirs\nowner=next\n' > "$LOCKS/1.checkpoint" ;;
+esac
+exit \$rc
+SH
+  chmod +x "$SANDBOX/shim/rm"
+  PATH="$SANDBOX/shim:$PATH" agentws unlock 1 >/dev/null
+  [ ! -e "$(lock_path 1)" ]
+  [ "$(cat "$LOCKS/1.notice")" = "next holder" ]
+  [ "$(sed -n 's/^phase=//p' "$(cp_file 1)")" = theirs ]
+}
+
+@test "tend reap, doctor auto-release, and destroy delete the checkpoint and notice" {
+  finish_merged 1 feat/one
+  dead_lock 1
+  (cd "$ROOT/1_proj" && agentws checkpoint set --phase done >/dev/null)
+  printf 'old notice\n' > "$LOCKS/1.notice"
+  run agentws tend --json
+  [ "$(printf '%s' "${lines[${#lines[@]}-1]}" | jq -r '.data.slots[] | select(.slot=="1") | .action')" = reaped ]
+  [ ! -e "$(lock_path 1)" ]
+  [ ! -e "$(cp_file 1)" ]
+  [ ! -e "$LOCKS/1.notice" ]
+
+  printf 'auto_release: true\nauto_release_minutes: 0\n' >> "$CONFIG"
+  agentws claim --slot 2 work >/dev/null 2>&1
+  (cd "$ROOT/2_proj" && agentws checkpoint set --phase idle >/dev/null)
+  [ -f "$LOCKS/2.notice" ]
+  agentws doctor 2 >/dev/null 2>&1 || true
+  [ ! -e "$(lock_path 2)" ]
+  [ ! -e "$(cp_file 2)" ]
+  [ ! -e "$LOCKS/2.notice" ]
+
+  agentws lock 3 work >/dev/null
+  (cd "$ROOT/3_proj" && agentws checkpoint set --phase gone >/dev/null)
+  run agentws destroy 3 --yes
   [ "$status" -eq 0 ]
   [ ! -e "$(lock_path 3)" ]
   [ ! -e "$(cp_file 3)" ]

@@ -111,6 +111,16 @@ build_farm() {
   [ "$(slot_json 1 .claimable)" = true ]
 }
 
+@test "a stale lock on a clean slot still on the default branch is not orphaned" {
+  git -C "$SRC" checkout -q --detach
+  git -C "$ROOT/1_proj" switch -q main
+  write_lock_default 1
+  set_lock_age_hours 1 13
+  [ "$(slot_json 1 .orphaned)" = false ]
+  printf 'edit\n' >> "$ROOT/1_proj/file"
+  [ "$(slot_json 1 .orphaned)" = true ]
+}
+
 @test "status names the orphan and its resume point" {
   build_farm
   run agentws status
@@ -140,6 +150,7 @@ build_farm() {
   last_json | jq -e '.data.problems | any(test("^1: orphaned \\(process_dead\\): implement · finish the parser"))' >/dev/null
   last_json | jq -e '.data.problems | any(test("^2: orphaned \\(process_dead\\)"))' >/dev/null
   [ "$(last_json | jq '[.data.problems[] | select(test("^[345]: orphaned"))] | length')" -eq 0 ]
-  [ -f "$(lock_path 1)" ] && [ -f "$(lock_path 2)" ]
+  [ -f "$(lock_path 1)" ]
+  [ -f "$(lock_path 2)" ]
   [ "$(git -C "$ROOT/1_proj" branch --show-current)" = feat/one ]
 }

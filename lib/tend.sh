@@ -161,6 +161,7 @@ _tend_move() {
   if [ "$action" = env ]; then
     TEND_ACTION=unchanged; TEND_DETAIL="environment checked"
   fi
+  _tend_drop_released "$s"
   cmd_unlock "$s" >/dev/null 2>&1 || { TEND_RC=8; _tend_problem "$s: could not release maintenance lock"; }
   TEND_HELD=""
   _tend_restore_stale "$s"
@@ -174,10 +175,19 @@ _tend_save_stale() { # _tend_save_stale <slot>
   [ ! -f "$(lock_file "$1")" ] || TEND_STALE="$(cat "$(lock_file "$1")")"
 }
 
-_tend_restore_stale() { # _tend_restore_stale <slot>
+# The stale lock tend displaced is not put back when the slot returned to
+# service, so its checkpoint and notice go too, while tend still holds the lock.
+_tend_drop_released() { # _tend_drop_released <slot>
   [ -n "$TEND_STALE" ] || return 0
   case "$TEND_ACTION" in
     reaped|refreshed|unchanged) CHECKPOINT_HOLD=0 checkpoint_drop "$1" ;;
+  esac
+}
+
+_tend_restore_stale() { # _tend_restore_stale <slot>
+  [ -n "$TEND_STALE" ] || return 0
+  case "$TEND_ACTION" in
+    reaped|refreshed|unchanged) ;;
     *) ( set -o noclobber; printf '%s\n' "$TEND_STALE" > "$(lock_file "$1")" ) 2>/dev/null || true ;;
   esac
   TEND_STALE=""
@@ -337,6 +347,7 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
           fi
         fi
         if [ -n "$TEND_HELD" ]; then
+          _tend_drop_released "$s"
           cmd_unlock "$s" >/dev/null 2>&1 || TEND_RC=8
           TEND_HELD=""
         fi

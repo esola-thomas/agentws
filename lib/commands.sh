@@ -1034,7 +1034,8 @@ cmd_destroy() {
 
   # The lock outlives the checkout otherwise, and would block the next create.
   if [ -f "$(lock_file "$slot")" ] && { lock_mine "$slot" || [ "${FORCE:-0}" -eq 1 ]; }; then
-    run rm -f "$(lock_file "$slot")" && checkpoint_drop "$slot"
+    checkpoint_drop "$slot"
+    run rm -f "$(lock_file "$slot")"
   fi
 
   if [ "${JSON:-0}" -eq 1 ]; then
@@ -1074,8 +1075,8 @@ _auto_release_check() { # _auto_release_check <slot>
   now="$(date +%s)"; threshold=$((AGENTWS_AUTO_RELEASE_MINUTES * 60))
 
   if [ "$threshold" -eq 0 ]; then
+    checkpoint_drop "$s"
     if run rm -f "$(lock_file "$s")"; then
-      checkpoint_drop "$s"
       [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
       AUTO_RELEASE_STATUS="pass"
       AUTO_RELEASE_DETAIL="released finished slot after 0 quiet minute(s)"
@@ -1086,8 +1087,8 @@ _auto_release_check() { # _auto_release_check <slot>
   if [ "$seen_head" = "$head" ] && [[ "$seen_epoch" =~ ^[0-9]+$ ]]; then
     elapsed=$((now - seen_epoch))
     if [ "$elapsed" -ge "$threshold" ]; then
+      checkpoint_drop "$s"
       if run rm -f "$(lock_file "$s")"; then
-        checkpoint_drop "$s"
         [ "${DRY:-0}" -eq 1 ] || rm -f "$marker" 2>/dev/null || true
         AUTO_RELEASE_STATUS="pass"
         AUTO_RELEASE_DETAIL="released finished slot after $AGENTWS_AUTO_RELEASE_MINUTES quiet minute(s)"

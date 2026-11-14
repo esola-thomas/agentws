@@ -27,8 +27,8 @@ cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS,
 
 # 0. Read the claim notice (stderr). Suffix anything you create outside the
 #    checkout (databases, containers, temp dirs, ports) with AGENTWS_LABEL so
-#    parallel slots never share it. A worker inside the slot gets the same
-#    notice from the session-start hook.
+#    parallel slots never share it. A Claude Code worker inside the slot
+#    gets the same notice from the session-start hook (`agentws setup`).
 
 # 1. Bootstrap BEFORE the first build or test. The claim envelope carries a
 #    provider hint: agentws claim '<task>' --json | jq -r .data.bootstrap_hint
@@ -43,8 +43,8 @@ git checkout -b <branch> origin/<base>
 #    Checkpoint at each milestone, from inside the slot, so a resumed or
 #    replacement session knows where the task stands:
 agentws checkpoint set --phase '<phase>' --pr '<url>' --next '<next step>'
-agentws checkpoint show                      # on resume; also prints what a
-                                             # dead previous owner left
+agentws checkpoint show                      # on resume; also prints what the
+                                             # previous owner left
 
 # 4. After the PR merges (or when abandoning the task):
 agentws recycle "$AGENTWS_SLOT"              # fetch, park at origin/<default>,
@@ -89,7 +89,7 @@ agentws lock --takeover "$AGENTWS_SLOT"      # same owner only; keeps the reason
 - `ORPHANED` in `status` (or `"orphaned": true`) is a stale lock on a slot
   with unfinished work. It is reported, never cleaned up for you. Resume it
   only if that task is yours to resume: `agentws lock <slot>` takes the stale
-  lock, and `agentws checkpoint show` prints where the dead task stopped.
+  lock, and `agentws checkpoint show` prints where the previous task stopped.
 - Lock liveness is tied to `AGENTWS_PID`. If you fork a subprocess to do the
   work, the lock still belongs to the shell you exported.
 - A stale lock on a finished slot (branch merged or gone, clean tree, nothing
@@ -130,5 +130,4 @@ For Claude Code it also installs two hooks in `~/.claude/settings.json`:
   `git checkout <default-branch>`, or is `git reset --hard` with any
   arguments. A session outside every slot, such as an orchestrator at the
   farm root, is not guarded. With no farm or no `jq` it allows silently. It
-  fires under `--dangerously-skip-permissions` too (verified with Claude
-  Code 2.1.325).
+  also fires under `--dangerously-skip-permissions`.

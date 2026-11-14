@@ -404,7 +404,13 @@ slot_orphan_reason() { # slot_orphan_reason <slot> -> process_dead|ttl, rc 1 if 
   [ -n "$sr" ] || return 1
   provider_slot_exists "$s" || return 1
   [ "$(slot_reap_state "$s")" != "reap" ] || return 1
-  if [ "$(slot_dirty_count "$s")" = "0" ] && slot_parked "$s"; then return 1; fi
+  # A clean slot with no task commits holds nothing: parked, or still on the
+  # default branch at a commit origin already has.
+  if [ "$(slot_dirty_count "$s")" = "0" ] && { slot_parked "$s" || {
+       [ "$(slot_current_branch "$s")" = "$AGENTWS_DEFAULT_BRANCH" ] &&
+       git -C "$(provider_slot_path "$s")" merge-base --is-ancestor HEAD "origin/$AGENTWS_DEFAULT_BRANCH" 2>/dev/null; }; }; then
+    return 1
+  fi
   printf '%s' "$sr"
 }
 

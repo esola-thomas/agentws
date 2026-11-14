@@ -65,8 +65,8 @@ cwd with the same env and flags; the work on disk is always intact.
 2. **Label shared resources.** The claim notice (stderr of `claim`, or the
    session-start hook inside a locked slot) names the slot's label, for
    example `myrepo_3` (`AGENTWS_LABEL`). Suffix every database, container,
-   compose project, temp dir, and port (`base + 3`) you create outside the
-   checkout with it, and follow the notice's project lines.
+   compose project, and temp dir you create outside the checkout with it,
+   offset ports by the slot number, and follow the notice's project lines.
 3. **Branch now.** `git checkout -b <branch> origin/<base>`. An idle slot is
    parked detached at `origin/<default>`; a commit made there is on no branch.
 4. **Foreground only.** Every gate, test, and reviewer call is a plain Bash
@@ -77,8 +77,8 @@ cwd with the same env and flags; the work on disk is always intact.
 5. **Checkpoint at each milestone**, from inside the slot:
    `agentws checkpoint set --phase <phase> --pr <url> --next '<next step>'`
    (MCP `workspace_checkpoint`). It lives beside the lock, not in the
-   checkout. On resume, `agentws checkpoint show` first; it also prints what a
-   dead previous owner left.
+   checkout. On resume, `agentws checkpoint show` first; it also prints what
+   the previous owner left.
 6. **Verify against CI's shape**, not a source checkout: same build artifact,
    same pinned linter versions, `git status` clean after any formatter.
 7. **Finish** with the project's PR pipeline, or `STATUS: BLOCKED` after three
