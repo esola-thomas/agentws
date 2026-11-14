@@ -35,9 +35,8 @@ All notable changes to this project are recorded here. Format follows
 - Orphan state: a slot whose lock is stale by the existing ladder and whose
   task is unfinished (branch neither merged nor gone, or real changes; see
   REFERENCE.md for the exact rule) shows `ORPHANED (<reason>): <phase> ·
-  <next>` in `status`, `orphaned` and
-  `orphan_reason` in `status --json`, and a `tend` problem. Nothing is
-  released or taken over. A lock without `owner_pid` shows its checkpoint
+  <next>` in `status`, `orphaned` and `orphan_reason` in `status --json`,
+  and a `tend` problem. Nothing is released or taken over. A lock without `owner_pid` shows its checkpoint
   age in `status`, as information only.
 - `agentws hook pre-tool-use`, a Claude Code PreToolUse guard that
   `agentws setup` installs next to the session-start hook. For a session
@@ -70,6 +69,18 @@ All notable changes to this project are recorded here. Format follows
   `workspace_recycle` passes stale locks to it instead of refusing them.
 - When `recycle` cannot delete the task branch because another checkout has it,
   it names that checkout (and its slot) and the command that frees it.
+
+## [0.0.7] - 2026-11-13
+
+### Changed
+
+- The Claude plugin's `agentws` skill meets the plugin directory's policy
+  review: it no longer gives a headless dispatch recipe that skips permission
+  prompts, no longer forbids Claude's own tools, and no longer defers to a
+  contract fetched by URL; the parts of the contract an agent needs are in the
+  skill itself. The CLI-installed skill under `skills/` is unchanged.
+- The plugin README links the CLI install instructions instead of showing a
+  `curl | bash` line, and shows the one-step marketplace install command.
 
 ## [0.0.6] - 2026-10-28
 

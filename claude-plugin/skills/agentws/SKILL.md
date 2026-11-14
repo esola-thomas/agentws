@@ -5,14 +5,13 @@ description: Claim, bootstrap, use, and recycle an isolated agentws slot for any
 
 # agentws slot lifecycle
 
-One slot = one task = one lock. If anything below is unclear, `AGENTS.md` in
-the agentws repository
-(<https://github.com/esola-thomas/agentws/blob/main/AGENTS.md>) is the full
-contract.
+One slot = one task = one lock. This skill is self-contained: everything an
+agent needs to use a slot farm is below.
 
-This skill drives the `agentws` CLI. If `agentws status` is not found, the CLI
-is not installed: say so and point to `/agentws:init`. Do not run a remote installer
-from this skill; tell the developer to install the CLI separately and use plain git.
+This skill drives the `agentws` CLI already installed on the machine. If
+`agentws status` is not found, the CLI is not installed: say so, point the
+developer to `/agentws:init`, and continue with plain git. Do not install
+anything from this skill. Do not run a remote installer from this skill.
 
 ## Am I an orchestrator or a worker?
 
@@ -30,10 +29,10 @@ agentws claim '<task>' --json | jq -r .data.bootstrap_hint   # run it in the slo
 ```
 
 Prefer the MCP tools (`workspace_claim`, `workspace_status`, `workspace_recycle`)
-when they are loaded; they are the same CLI without `--force`. A refusal
-(busy, stale lock, not claimable) is final: report it, or pick another slot.
-Never loop on a claim, never force, never ask the human to force. Chain
-anything that needs the lock with `&&`, never `;`, so a refusal stops it.
+when the developer has set them up; they are the same CLI without `--force`. A
+refusal (busy, stale lock, not claimable) is final: report it, or pick another
+slot. Never loop on a claim, never force, never ask the human to force. Chain a
+command that depends on a lock with `&&`, not `;`, so a refusal stops it.
 
 ```bash
 agentws claim --slot 3 '<task>'                # one specific slot, same refusals
@@ -43,19 +42,10 @@ AGENTWS_PID=$$ agentws lock --takeover "$AGENTWS_SLOT"   # after a restart: re-b
 Never `unlock N; lock N` to re-enter a slot: `--takeover` does it atomically
 and only for the same owner.
 
-Dispatching a headless worker into the slot (Claude Code shown; any headless
-harness works the same way, with cwd set to the slot):
-
-```bash
-cd "$AGENTWS_WS" && <render brief> | \
-  API_TIMEOUT_MS=600000 NODE_OPTIONS=--dns-result-order=ipv4first \
-  claude -p --model <tier> --dangerously-skip-permissions > <task>.log 2>&1
-```
-
-Run that as ONE foreground Bash call with `timeout: 600000`, or background the
-whole script and wait for its exit; never background pieces of it. Recovery
-for a stalled or killed worker is `claude --continue -p "<ruling>"` in the same
-cwd with the same env and flags; the work on disk is always intact.
+To hand a slot to another agent, start that agent with its working directory
+set to `$AGENTWS_WS` and the task in its prompt, using whatever launch method
+and permission settings the developer already uses. The worker's work stays on
+disk in the slot, so a stopped worker can be resumed in the same directory.
 
 ## Inside the slot (everyone)
 
@@ -69,20 +59,15 @@ cwd with the same env and flags; the work on disk is always intact.
    offset ports by the slot number, and follow the notice's project lines.
 3. **Branch now.** `git checkout -b <branch> origin/<base>`. An idle slot is
    parked detached at `origin/<default>`; a commit made there is on no branch.
-4. **Foreground only.** Every gate, test, and reviewer call is a plain Bash
-   call with an explicit `timeout: 600000`. Never `run_in_background`, never
-   Monitor or task tools to wait, never end a turn saying what you will run
-   next. A headless session dies when the turn ends; notifications never
-   arrive.
-5. **Checkpoint at each milestone**, from inside the slot:
+4. **Checkpoint at each milestone**, from inside the slot:
    `agentws checkpoint set --phase <phase> --pr <url> --next '<next step>'`
    (MCP `workspace_checkpoint`). It lives beside the lock, not in the
    checkout. On resume, `agentws checkpoint show` first; it also prints what
    the previous owner left.
-6. **Verify against CI's shape**, not a source checkout: same build artifact,
+5. **Verify against CI's shape**, not a source checkout: same build artifact,
    same pinned linter versions, `git status` clean after any formatter.
-7. **Finish** with the project's PR pipeline, or `STATUS: BLOCKED` after three
-   failed fix iterations. Print the PR URL as the last line.
+6. **Finish** with the project's PR process, or report the task as blocked
+   with what failed. In a headless run, end with the PR URL.
 
 ## Recycle (orchestrator, after merge)
 
@@ -92,9 +77,19 @@ agentws refresh                     # park idle slots at the new origin/<default
 agentws reap                        # recycle every finished slot with a stale or no lock
 ```
 
-Submodule pointer merges are handled: `recycle` and `refresh` resync submodules
-to the revision they reset to. If one cannot be restored, the command fails and
-keeps the lock rather than handing on a dirty slot.
+Untracked files block `recycle`; pass `--clean-untracked` only for files you
+created. Submodule pointer merges are handled: `recycle` and `refresh` resync
+submodules to the revision they reset to. If one cannot be restored, the
+command fails and keeps the lock rather than handing on a dirty slot.
+
+## Things that look like your problem and are not
+
+- `phantom-dirty` on an idle slot left on the default branch is shared-ref
+  drift, not uncommitted work. `agentws refresh` heals it.
+- A slot showing `N files dirty` that you do not hold belongs to someone
+  else's task. Leave it.
+- Lock liveness follows `AGENTWS_PID`. A subprocess you start does not own the
+  lock; the shell you exported it from does.
 
 ## Never
 
