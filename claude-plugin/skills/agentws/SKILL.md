@@ -52,11 +52,21 @@ disk in the slot, so a stopped worker can be resumed in the same directory.
 1. **Bootstrap before the first gate.** Run the bootstrap hint or the
    project's setup doc (`uv sync`, `npm ci`, the project's setup script,
    submodule init). A first gate that fails on missing tooling is not a code problem.
-2. **Branch now.** `git checkout -b <branch> origin/<base>`. An idle slot is
+2. **Label shared resources.** The claim notice (stderr of `claim`, or the
+   session-start hook inside a locked slot) names the slot's label, for
+   example `myrepo_3` (`AGENTWS_LABEL`). Suffix every database, container,
+   compose project, and temp dir you create outside the checkout with it,
+   offset ports by the slot number, and follow the notice's project lines.
+3. **Branch now.** `git checkout -b <branch> origin/<base>`. An idle slot is
    parked detached at `origin/<default>`; a commit made there is on no branch.
-3. **Verify against CI's shape**, not a source checkout: same build artifact,
+4. **Checkpoint at each milestone**, from inside the slot:
+   `agentws checkpoint set --phase <phase> --pr <url> --next '<next step>'`
+   (MCP `workspace_checkpoint`). It lives beside the lock, not in the
+   checkout. On resume, `agentws checkpoint show` first; it also prints what
+   the previous owner left.
+5. **Verify against CI's shape**, not a source checkout: same build artifact,
    same pinned linter versions, `git status` clean after any formatter.
-4. **Finish** with the project's PR process, or report the task as blocked
+6. **Finish** with the project's PR process, or report the task as blocked
    with what failed. In a headless run, end with the PR URL.
 
 ## Recycle (orchestrator, after merge)
@@ -86,3 +96,8 @@ command fails and keeps the lock rather than handing on a dirty slot.
 `git worktree remove` / `rm -rf` / `reset --hard` on a slot · `git checkout
 <default>` inside a slot · editing a slot you do not hold · a second task in
 the same claim.
+
+In Claude Code, the `agentws hook pre-tool-use` guard denies edits to another
+slot or the reference slot, `git checkout <default>`, and `git reset --hard`
+when the session is inside a slot. A denial is the contract, not a bug: do
+not work around it.

@@ -22,7 +22,13 @@ export AGENTWS_PID=$$                        # the shell that outlives the task
 export AGENTWS_OWNER="<harness>:<task>"      # e.g. claude:mc7-mission-home
 
 eval "$(agentws claim '<one-line task>' --print-env)"
-cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS
+cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS,
+                                             # AGENTWS_LABEL (e.g. myrepo_3)
+
+# 0. Read the claim notice (stderr). Suffix anything you create outside the
+#    checkout (databases, containers, temp dirs, ports) with AGENTWS_LABEL so
+#    parallel slots never share it. A Claude Code worker inside the slot
+#    gets the same notice from the session-start hook (`agentws setup`).
 
 # 1. Bootstrap BEFORE the first build or test. The claim envelope carries a
 #    provider hint: agentws claim '<task>' --json | jq -r .data.bootstrap_hint
@@ -34,6 +40,11 @@ cd "$AGENTWS_WS"                             # also exported: AGENTWS_SLOT, WS
 git checkout -b <branch> origin/<base>
 
 # 3. Work. Commit. Push. Open the PR the way the project says to.
+#    Checkpoint at each milestone, from inside the slot, so a resumed or
+#    replacement session knows where the task stands:
+agentws checkpoint set --phase '<phase>' --pr '<url>' --next '<next step>'
+agentws checkpoint show                      # on resume; also prints what the
+                                             # previous owner left
 
 # 4. After the PR merges (or when abandoning the task):
 agentws recycle "$AGENTWS_SLOT"              # fetch, park at origin/<default>,
@@ -75,6 +86,10 @@ agentws lock --takeover "$AGENTWS_SLOT"      # same owner only; keeps the reason
   detached; it refuses anything that is real dirt.
 - A slot showing `N files dirty` that you do not hold belongs to someone
   else's in-flight task. Leave it.
+- `ORPHANED` in `status` (or `"orphaned": true`) is a stale lock on a slot
+  with unfinished work. It is reported, never cleaned up for you. Resume it
+  only if that task is yours to resume: `agentws lock <slot>` takes the stale
+  lock, and `agentws checkpoint show` prints where the previous task stopped.
 - Lock liveness is tied to `AGENTWS_PID`. If you fork a subprocess to do the
   work, the lock still belongs to the shell you exported.
 - A stale lock on a finished slot (branch merged or gone, clean tree, nothing
@@ -103,3 +118,16 @@ is always safe.
 tools) and `skills/agentws/SKILL.md`, the same ritual plus headless-worker
 rules: `~/.claude/skills/agentws` for Claude Code, `~/.agents/skills/agentws`
 for Codex, Copilot, Cursor, and Gemini. Every path runs the same CLI.
+
+For Claude Code it also installs two hooks in `~/.claude/settings.json`:
+
+- SessionStart, `agentws hook session-start`: the farm table, or, inside a
+  locked slot, that slot's claim notice and checkpoint.
+- PreToolUse, `agentws hook pre-tool-use`, for a session whose directory is
+  inside a slot. It denies `Write`, `Edit`, `MultiEdit`, and `NotebookEdit`
+  to a path in another slot or in the reference slot, and a Bash command (or
+  one segment of a `;`, `&&`, `||`, `|` chain) that is exactly
+  `git checkout <default-branch>`, or is `git reset --hard` with any
+  arguments. A session outside every slot, such as an orchestrator at the
+  farm root, is not guarded. With no farm or no `jq` it allows silently. It
+  also fires under `--dangerously-skip-permissions`.

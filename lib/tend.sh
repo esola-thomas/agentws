@@ -161,6 +161,7 @@ _tend_move() {
   if [ "$action" = env ]; then
     TEND_ACTION=unchanged; TEND_DETAIL="environment checked"
   fi
+  _tend_drop_released "$s"
   cmd_unlock "$s" >/dev/null 2>&1 || { TEND_RC=8; _tend_problem "$s: could not release maintenance lock"; }
   TEND_HELD=""
   _tend_restore_stale "$s"
@@ -174,6 +175,15 @@ _tend_save_stale() { # _tend_save_stale <slot>
   [ ! -f "$(lock_file "$1")" ] || TEND_STALE="$(cat "$(lock_file "$1")")"
 }
 
+# The stale lock tend displaced is not put back when the slot returned to
+# service, so its checkpoint and notice go too, while tend still holds the lock.
+_tend_drop_released() { # _tend_drop_released <slot>
+  [ -n "$TEND_STALE" ] || return 0
+  case "$TEND_ACTION" in
+    reaped|refreshed|unchanged) CHECKPOINT_HOLD=0 checkpoint_drop "$1" ;;
+  esac
+}
+
 _tend_restore_stale() { # _tend_restore_stale <slot>
   [ -n "$TEND_STALE" ] || return 0
   case "$TEND_ACTION" in
@@ -185,7 +195,7 @@ _tend_restore_stale() { # _tend_restore_stale <slot>
 
 _tend_pass() (
   local check="$1" end s d source="" fetch=ok env br dirty action state payload temp signature="" probe="" why=""
-  local fingerprint="" previous="" cached_rc=0 start_ms
+  local fingerprint="" previous="" cached_rc=0 start_ms orphan="" cps=""
   local TEND_HELD="" TEND_SOURCE_OK="" TEND_WORKTREES="" TEND_HEALTH=""
   local TEND_ACTION="" TEND_DETAIL="" TEND_RC=0 TEND_STALE=""
   local TEND_PROBLEMS=() TEND_RECORDS=() health=() statuses=() branches=() environments=()
@@ -194,6 +204,9 @@ _tend_pass() (
   AGENTWS_PID=$$
   TTL_OVERRIDE=1
   FORCE=0
+  # The maintenance lock is not a task: a checkpoint it displaces is kept for
+  # the stale lock put back afterwards (_tend_restore_stale).
+  CHECKPOINT_HOLD=1
   start_ms="$(_tend_milliseconds)"
   state="$AGENTWS_ROOT/.agentws"
   if [ "$check" -eq 0 ]; then
@@ -235,7 +248,7 @@ _tend_pass() (
     fi
     statuses+=("$probe"); branches+=("$br"); environments+=("$env")
     signature="$signature
-$s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock_stale_reason "$s"):$(if [ -f "$(lock_file "$s")" ]; then cksum < "$(lock_file "$s")"; fi):$(if [ -d "$AGENTWS_LOCK_DIR/$s.acquire" ]; then printf acquiring; fi)"
+$s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock_stale_reason "$s"):$(if [ -f "$(lock_file "$s")" ]; then cksum < "$(lock_file "$s")"; fi):$(if [ -d "$AGENTWS_LOCK_DIR/$s.acquire" ]; then printf acquiring; fi):$(checkpoint_summary "$s" next)"
   done
   if [ "$check" -eq 0 ]; then
     if [ "$AGENTWS_PROVIDER" = worktree ] && [ -n "$TEND_SOURCE_OK" ]; then
@@ -334,6 +347,7 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
           fi
         fi
         if [ -n "$TEND_HELD" ]; then
+          _tend_drop_released "$s"
           cmd_unlock "$s" >/dev/null 2>&1 || TEND_RC=8
           TEND_HELD=""
         fi
@@ -341,7 +355,12 @@ $s:$TEND_HEALTH:$br:$probe:$env:$(git -C "$d" rev-parse HEAD 2>/dev/null):$(lock
         [ -n "$TEND_ACTION" ] || TEND_ACTION="skipped:disabled"
       fi
     fi
-    if [ -z "$TEND_HEALTH" ] && ! lock_active "$s"; then
+    orphan=""
+    [ -n "$TEND_HEALTH" ] || orphan="$(slot_orphan_reason "$s" || true)"
+    if [ -n "$orphan" ]; then
+      cps="$(checkpoint_summary "$s" next)"
+      _tend_problem "$s: orphaned ($orphan)${cps:+: $cps}${TEND_DETAIL:+ ($TEND_DETAIL)}; see agentws checkpoint show $s"
+    elif [ -z "$TEND_HEALTH" ] && ! lock_active "$s"; then
       case "$TEND_ACTION" in
         skipped:*)
           if [ -f "$(lock_file "$s")" ] && lock_is_stale "$s"; then

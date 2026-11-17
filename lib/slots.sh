@@ -49,6 +49,27 @@ slot_resolve() { # slot_resolve <arg> -> slot id, rc 1 if no match
   return 1
 }
 
+# The slot whose checkout holds <dir>, compared by physical path so a symlinked
+# cwd still matches. The deepest slot wins if checkouts are nested.
+slot_from_dir() { # slot_from_dir <physical-dir> -> slot id, rc 1 if none
+  local dir="$1" s p best="" len=0
+  for s in $AGENTWS_SLOTS; do
+    p="$(cd "$(provider_slot_path "$s")" 2>/dev/null && pwd -P)" || continue
+    case "$dir/" in
+      "$p/"*) if [ "${#p}" -gt "$len" ]; then best="$s"; len="${#p}"; fi ;;
+    esac
+  done
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+
+# <top>_<slot> with anything outside [A-Za-z0-9_] replaced, so it is a valid
+# database, container, or directory name. Agents suffix shared machine
+# resources with it.
+slot_label() { # slot_label <slot>
+  printf '%s_%s' "$AGENTWS_TOP" "$1" | tr -c 'A-Za-z0-9_' '_'
+}
+
 # ------------------------------------------------------------------- probes
 # Each returns a value with a safe default, never an error, so a slot with a
 # broken checkout still produces a complete status row.
@@ -372,6 +393,27 @@ EOF
   printf '%s' "$why"
 }
 
+# Orphaned: the lock is stale by the existing ladder, and the slot still holds
+# a task reap would not recycle (branch neither merged nor gone, or real
+# changes). Prints the stale reason. Surfaces a state, changes nothing: no
+# command releases, takes over, or resumes an orphan on its own.
+slot_orphan_reason() { # slot_orphan_reason <slot> -> process_dead|ttl, rc 1 if not orphaned
+  local s="$1" sr
+  [ -f "$(lock_file "$s")" ] || return 1
+  sr="$(lock_stale_reason "$s")"
+  [ -n "$sr" ] || return 1
+  provider_slot_exists "$s" || return 1
+  [ "$(slot_reap_state "$s")" != "reap" ] || return 1
+  # A clean slot with no task commits holds nothing: parked, or still on the
+  # default branch at a commit origin already has.
+  if [ "$(slot_dirty_count "$s")" = "0" ] && { slot_parked "$s" || {
+       [ "$(slot_current_branch "$s")" = "$AGENTWS_DEFAULT_BRANCH" ] &&
+       git -C "$(provider_slot_path "$s")" merge-base --is-ancestor HEAD "origin/$AGENTWS_DEFAULT_BRANCH" 2>/dev/null; }; }; then
+    return 1
+  fi
+  printf '%s' "$sr"
+}
+
 # Names of the slots reap would recycle, space-separated.
 slot_reapable_names() {
   local s out=""
@@ -407,8 +449,9 @@ json_lock_obj() { # json_lock_obj <slot> -> object or null
 
 # The single per-slot object. wsctl:463.
 json_slot_obj() { # json_slot_obj <slot>
-  local s="$1" d role br dirty dirty_state env env_epoch hint up ab ahead behind warns
+  local s="$1" d role br dirty dirty_state env env_epoch hint up ab ahead behind warns orphan
   d="$(provider_slot_path "$s")"
+  orphan="$(slot_orphan_reason "$s" || true)"
   role="$(slot_role "$s")"
   br="$(slot_branch "$s")"
   dirty="$(slot_dirty_count "$s")"
@@ -431,8 +474,8 @@ json_slot_obj() { # json_slot_obj <slot>
   [ "$dirty_state" = "broken" ] && warns="$(jjoin "$warns" '"git_state_unreadable"')"
   [ "$env" != "ready" ] && warns="$(jjoin "$warns" '"environment_not_ready"')"
 
-  printf '{"slot":%s,"name":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"warnings":[%s]}' \
-    "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$d")" "$(jstr "$role")" \
+  printf '{"slot":%s,"name":%s,"label":%s,"path":%s,"role":%s,"exists":%s,"branch":%s,"dirty":%s,"dirty_state":%s,"env":%s,"env_setup_epoch":%s,"bootstrap_hint":%s,"ahead":%s,"behind":%s,"upstream":%s,"upstream_ref":%s,"free":%s,"claimable":%s,"lock":%s,"orphaned":%s,"orphan_reason":%s,"checkpoint":%s,"warnings":[%s]}' \
+    "$(jstr "$s")" "$(jstr "$(slot_name "$s")")" "$(jstr "$(slot_label "$s")")" "$(jstr "$d")" "$(jstr "$role")" \
     "$(jbool "$(provider_slot_exists "$s" && echo 1 || echo 0)")" \
     "$(jstr "$br")" "$(jnum "$dirty")" "$(jstr "$dirty_state")" "$(jstr "$env")" \
     "$(if [ -n "$env_epoch" ]; then jnum "$env_epoch"; else printf 'null'; fi)" \
@@ -441,5 +484,7 @@ json_slot_obj() { # json_slot_obj <slot>
     "$(if [ -n "$up" ]; then jstr "$up"; else printf 'null'; fi)" \
     "$(jbool "$(slot_free "$s" && echo 1 || echo 0)")" \
     "$(jbool "$(slot_claimable "$s" && echo 1 || echo 0)")" \
-    "$(json_lock_obj "$s")" "$warns"
+    "$(json_lock_obj "$s")" "$(jbool "$(if [ -n "$orphan" ]; then echo 1; else echo 0; fi)")" \
+    "$(if [ -n "$orphan" ]; then jstr "$orphan"; else printf 'null'; fi)" \
+    "$(json_checkpoint_obj "$s")" "$warns"
 }

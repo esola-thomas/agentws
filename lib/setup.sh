@@ -10,6 +10,8 @@ SETUP_HARNESSES="claude codex copilot cursor gemini"
 # The hook is found again by this marker; the full command carries the quoted
 # absolute path so it runs even when ~/.local/bin is not on the harness's PATH.
 SETUP_HOOK_MARK="hook session-start"
+SETUP_GUARD_MARK="hook pre-tool-use"
+SETUP_GUARD_MATCHER="Write|Edit|MultiEdit|NotebookEdit|Bash"
 
 # ---------------------------------------------------------------------- init
 # init [repo] [--root DIR] [--slots N]: one command from a checkout to a farm.
@@ -104,20 +106,150 @@ cmd_use() {
 }
 
 # ---------------------------------------------------------------------- hook
-# hook session-start: context for a new agent session. Silent and exit 0
-# whenever there is no farm, so it is safe to install globally.
+# hook session-start: context for a new agent session. Inside a locked slot it
+# is that slot's claim notice and checkpoint, which is how a worker that never
+# claimed learns its label and resume point; elsewhere it is the farm table.
+# Silent and exit 0 whenever there is no farm, so it is safe to install globally.
 cmd_hook() {
   case "${1:-}" in
     session-start)
       local out
+      out="$( ( config_load && provider_load && slot_context ) 2>/dev/null )" || out=""
+      if [ -n "$out" ]; then printf '%s\n' "$out"; return 0; fi
       ( config_load && provider_load && tend_notice ) 2>/dev/null || true
       out="$("$AGENTWS_BIN_DIR/agentws" free 2>/dev/null)" || return 0
       [ -n "$out" ] || return 0
       printf 'agentws farm (claim a slot before any checkout of the farmed repo; see the agentws skill):\n%s\n' "$out"
       ;;
-    *) printf 'hook: unknown event %s (session-start)\n' "${1:-}" >&2; return 2 ;;
+    pre-tool-use)
+      # Silent allow on anything unexpected: no jq, no farm, unparseable input.
+      command -v jq >/dev/null 2>&1 || return 0
+      local input reason
+      input="$(cat)"
+      reason="$( (hook_guard "$input") 2>/dev/null | sed -n 's/^deny://p' | tail -1)" || reason=""
+      [ -n "$reason" ] || return 0
+      jq -cn --arg r "agentws: $reason" \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+      ;;
+    *) printf 'hook: unknown event %s (session-start, pre-tool-use)\n' "${1:-}" >&2; return 2 ;;
   esac
   return 0
+}
+
+# hook pre-tool-use: the agentws contract as a Claude Code PreToolUse guard,
+# for a session whose cwd is inside a slot. Prints "deny:<reason>" to refuse;
+# prints nothing to allow. An orchestrator at the farm root is not guarded.
+hook_guard() { # hook_guard <hook-input-json>
+  local in="$1" cwd tool path cmd="" mine target
+  tool="$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null)" || return 0
+  case "$tool" in
+    Write|Edit|MultiEdit|NotebookEdit) ;;
+    Bash)
+      # Most Bash calls cannot match; skip loading the farm for them.
+      cmd="$(printf '%s' "$in" | jq -r '.tool_input.command // empty')"
+      case "$cmd" in *git*checkout*|*git*reset*) ;; *) return 0 ;; esac ;;
+    *) return 0 ;;
+  esac
+  cwd="$(printf '%s' "$in" | jq -r '.cwd // empty')"
+  [ -n "$cwd" ] || cwd="$(pwd)"
+  cd "$cwd" 2>/dev/null || return 0
+  config_load || return 0
+  provider_load || return 0
+  mine="$(slot_from_dir "$(pwd -P)")" || return 0
+  case "$tool" in
+    Write|Edit|MultiEdit|NotebookEdit)
+      path="$(printf '%s' "$in" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')"
+      [ -n "$path" ] || return 0
+      case "$path" in /*) ;; *) path="$cwd/$path" ;; esac
+      target="$(slot_from_dir "$(_guard_resolve "$path")")" || return 0
+      if slot_is_reference "$target"; then
+        printf 'deny:%s is in the reference slot %s (%s), which is read-only. Work in the slot you hold.\n' \
+          "$path" "$target" "$(slot_name "$target")"
+      elif [ "$target" != "$mine" ]; then
+        printf 'deny:%s is in slot %s (%s), but this session works in slot %s (%s). Edit only the slot you are in.\n' \
+          "$path" "$target" "$(slot_name "$target")" "$mine" "$(slot_name "$mine")"
+      fi ;;
+    Bash) _guard_bash "$cmd" ;;
+  esac
+  return 0
+}
+
+# Lexically normalised (no . or ..), then the final symlink chain and the
+# nearest existing ancestor resolved physically, so the path names the slot a
+# write would actually land in.
+_guard_resolve() { # _guard_resolve <abs-path>
+  local p="$1" n=0 l rest="" d
+  p="$(_guard_lexical "$p")"
+  while [ -L "$p" ] && [ "$n" -lt 20 ]; do
+    l="$(readlink "$p")" || break
+    case "$l" in /*) p="$(_guard_lexical "$l")" ;; *) p="$(_guard_lexical "$(dirname "$p")/$l")" ;; esac
+    n=$((n + 1))
+  done
+  while [ ! -d "$p" ] && [ "$p" != / ]; do
+    rest="/$(basename "$p")$rest"
+    p="$(dirname "$p")"
+  done
+  d="$(cd "$p" 2>/dev/null && pwd -P)" || d="$p"
+  [ "$d" = / ] && d=""
+  printf '%s%s' "$d" "$rest"
+}
+
+_guard_lexical() ( # _guard_lexical <abs-path>; a subshell keeps IFS and set -f here
+  IFS=/ part="" out=""
+  set -f
+  for part in $1; do
+    case "$part" in
+      ''|.) ;;
+      ..) out="${out%/*}" ;;
+      *) out="$out/$part" ;;
+    esac
+  done
+  printf '%s' "${out:-/}"
+)
+
+# The two git commands the contract forbids inside a slot, as a whole command
+# or as one segment of a ; && || | chain. Quoted strings are blanked first, so
+# a commit message that mentions one is not a match.
+_guard_bash() ( # _guard_bash <command>; a subshell keeps set -f here
+  seg="" segs=""
+  segs="$(printf '%s\n' "$1" | _guard_unquote | tr ';|&' '\n\n\n')"
+  set -f
+  while IFS= read -r seg; do
+    # shellcheck disable=SC2086  # word splitting collapses whitespace on purpose
+    set -- $seg
+    [ "${1-}" = git ] || continue
+    if [ $# -eq 3 ] && [ "$2" = checkout ] && [ "$3" = "$AGENTWS_DEFAULT_BRANCH" ]; then
+      printf 'deny:git checkout %s inside a slot puts it on a ref other worktrees share. Branch with: git checkout -b <branch> origin/%s. Return the slot with: agentws recycle.\n' \
+        "$AGENTWS_DEFAULT_BRANCH" "$AGENTWS_DEFAULT_BRANCH"
+      return 0
+    fi
+    if [ $# -ge 3 ] && [ "$2" = reset ] && [ "$3" = --hard ]; then
+      printf 'deny:git reset --hard inside a slot discards work the agentws contract protects. The only reset is agentws recycle, run on your own slot.\n'
+      return 0
+    fi
+  done <<EOF
+$segs
+EOF
+  return 0
+)
+
+# One left-to-right scan: each quoted span, across lines, becomes Q; a # that
+# starts a word outside quotes ends the line, so a comment's apostrophe is not a quote.
+_guard_unquote() {
+  awk '
+    { n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (q == "") {
+          if (c == "#" && (i == 1 || substr($0, i - 1, 1) ~ /[ \t;&|]/)) break
+          if (c == "\\") { printf "%s", substr($0, i, 2); i++ }
+          else if (c == "\047" || c == "\"") { q = c; printf "Q" }
+          else printf "%s", c
+        } else if (q == "\"" && c == "\\") i++
+        else if (c == q) q = ""
+      }
+      if (q == "") printf "\n"
+    }'
 }
 
 # --------------------------------------------------------------------- setup
@@ -381,17 +513,22 @@ setup_mcp() { # setup_mcp <harness> <on|off>
   esac
 }
 
-# Claude Code SessionStart hook: shows the farm to every new session.
+# Claude Code hooks: SessionStart shows the farm, or the slot's notice and
+# checkpoint; PreToolUse guards the slot contract for a session inside a slot.
 setup_claude_hook() { # setup_claude_hook <on|off>
   local f="$HOME/.claude/settings.json"
   [ "$1" = off ] && [ ! -f "$f" ] && return 0
-  json_edit "$f" --arg mark "$SETUP_HOOK_MARK" --arg cmd "$(sq "$AGENTWS_BIN_DIR/agentws") hook session-start" --arg on "$1" '
-    def ours: (.command // "") | (contains("agentws") and contains($mark));
-    .hooks.SessionStart = ([(.hooks.SessionStart // [])[]
-        | if has("hooks") then .hooks = [.hooks[] | select(ours | not)] else . end
-        | select((has("hooks") | not) or (.hooks | length > 0))]
-      + (if $on == "on" then [{hooks:[{type:"command", command:$cmd}]}] else [] end))
-    | if (.hooks.SessionStart | length) == 0 then del(.hooks.SessionStart) else . end
+  json_edit "$f" --arg bin "$(sq "$AGENTWS_BIN_DIR/agentws")" --arg on "$1" \
+    --arg smark "$SETUP_HOOK_MARK" --arg gmark "$SETUP_GUARD_MARK" --arg matcher "$SETUP_GUARD_MATCHER" '
+    def ours($mark): (.command // "") | (contains("agentws") and contains($mark));
+    def wire($ev; $mark; $entry):
+      .hooks[$ev] = ([(.hooks[$ev] // [])[]
+          | if has("hooks") then .hooks = [.hooks[] | select(ours($mark) | not)] else . end
+          | select((has("hooks") | not) or (.hooks | length > 0))]
+        + (if $on == "on" then [$entry] else [] end))
+      | if (.hooks[$ev] | length) == 0 then del(.hooks[$ev]) else . end;
+    wire("SessionStart"; $smark; {hooks:[{type:"command", command:($bin + " " + $smark)}]})
+    | wire("PreToolUse"; $gmark; {matcher:$matcher, hooks:[{type:"command", command:($bin + " " + $gmark)}]})
     | if (.hooks | length) == 0 then del(.hooks) else . end'
 }
 

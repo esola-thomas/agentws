@@ -34,7 +34,8 @@ about whether a slot is claimable: they call the same `slot_claimable`.
 | `lib/core.sh` | Colour, JSON escaping, `run`/`confirm`/`die`. `jq` with a sed fallback, so the core has no hard dependency. |
 | `lib/config.sh` | The single config parser. Strict-subset YAML to `AGENTWS_*` and `AGENTWS_P_*`. Loud on unrecognised syntax. |
 | `lib/lock.sh` | The lock ladder. See below and [LOCKING.md](LOCKING.md). |
-| `lib/slots.sh` | Slot naming, enumeration, role assignment, and the shared per-slot JSON object. |
+| `lib/slots.sh` | Slot naming, enumeration, role assignment, the slot holding a directory, and the shared per-slot JSON object. |
+| `lib/checkpoint.sh` | Per-slot checkpoints beside the lock. Advisory: no lock or claim decision reads them. |
 | `lib/provider.sh` | Loads contract defaults, then the chosen provider over them, then asserts `provider_api_version` is `1`. |
 | `lib/envelope.sh` | One JSON line on stdout under `--json`; human narrative always to stderr. Maps error codes to stable exit codes. |
 | `lib/commands.sh` | The command implementations. |
@@ -55,8 +56,9 @@ thing that varies.
 
 ### The provider contract
 
-Twelve functions. `providers/_contract.sh` supplies a default for each, so a
-provider only implements what it actually changes.
+Fourteen functions. `providers/_contract.sh` supplies a default for each, so a
+provider only implements what it actually changes. Defaults load first, so a
+provider written before a hook existed still loads; the API version stays `1`.
 
 | Hook | Purpose | Default |
 |---|---|---|
@@ -68,7 +70,9 @@ provider only implements what it actually changes.
 | `provider_slot_doctor <slot> <path>` | Extra health checks. | Prints one OK line |
 | `provider_slot_reset <slot> <path> <ref>` | Bring state the parent checkout does not carry, such as submodule working trees, to `<ref>`. Called by `recycle` and `refresh` while the lock is still held. | Syncs submodules when the slot has a `.gitmodules`, else no-op |
 | `provider_commands` | Space-separated extra subcommand names. | Empty |
-| `provider_claim_env <slot> <path>` | Extra shell assignments for `claim --print-env`. | No-op |
+| `provider_claim_env <slot> <path>` | Extra `export K=V` lines, evaluated on every claim: appended to `claim --print-env`, returned as the `claim_env` object of `claim --json`, and listed in the claim notice. A failure is a claim warning. | No-op |
+| `provider_slot_claimed <slot> <path>` | Project setup that belongs to a claim, run once after the lock is written. Output goes to stderr. A failure is a claim warning; it never releases the lock or fails the claim. | No-op |
+| `provider_claim_notice <slot> <path>` | Extra lines for the claim notice. A failure drops them and adds a claim warning. | Empty |
 | `provider_env_check <slot> <path>` | Print `ready`, `missing`, or `stale`. Must be cheap enough for status. | `ready` |
 | `provider_env_setup <slot> <path>` | Provision or repair the project environment. | No-op |
 | `provider_bootstrap_hint <slot> <path>` | Short instruction returned to a claimed worker. | Empty |
