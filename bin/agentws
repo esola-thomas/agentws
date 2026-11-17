@@ -11,6 +11,7 @@
 #   agentws status                 all slots: branch, dirty, lock, claimable
 #   agentws free                   which slots are idle
 #   agentws claim "reason"         lock the first claimable slot, print its path
+#                                  (--slot N: that slot or a refusal)
 #   agentws lock <slot> "reason"   lock a specific slot
 #   agentws unlock <slot>          release your own lock
 #   agentws locks                  show all locks and their age
@@ -45,10 +46,13 @@
 # Options: --dry-run     print what would happen, change nothing
 #          --yes         skip confirmation on destructive actions
 #          --owner ID    identity to lock as (default: $AGENTWS_OWNER, else user@host:pid)
+#          --session ID  same as --owner; matches the MCP tools' session string
 #          --ttl H       per-lock lifetime in hours, clamped to ttl_hours
 #          --task-id ID  structured task id stored on a claim
 #          --branch NAME structured task branch, or recycle branch to delete
 #          --agent NAME  structured agent/model description stored on a claim
+#          --slot N      claim: this slot only, with the same refusals as claim
+#          --takeover    lock: re-bind your own lock to this session pid and reason
 #          --require-env claim only an environment-ready slot
 #          --with-env    create: provision the environment after checkout creation
 #          --fix-env     doctor: provision missing or stale environments
@@ -58,6 +62,9 @@
 #          --print-env   claim: emit shell assignments for eval
 #          --ignore-pid  disable process-liveness checks, use TTL only
 #          --config PATH use this .agentws.yml
+#          --            end of options: a reason may then start with a dash
+#
+# An unknown option is refused with exit 2 (EUSAGE), never kept as an argument.
 #
 # Auto-update: an install made by install.sh checks for a new release at most
 # once a day, in the background. AGENTWS_NO_AUTO_UPDATE=1 turns it off;
@@ -102,6 +109,8 @@ CLEAN_UNTRACKED=0
 CLAIM_TASK_ID=""
 CLAIM_BRANCH=""
 CLAIM_AGENT=""
+CLAIM_SLOT=""
+TAKEOVER=0
 
 # shellcheck source=../lib/core.sh
 . "$AGENTWS_LIB_DIR/core.sh"
@@ -146,21 +155,52 @@ while [ $# -gt 0 ]; do
     --with-env)   WITH_ENV=1; shift ;;
     --fix-env)    FIX_ENV=1; shift ;;
     --clean-untracked) CLEAN_UNTRACKED=1; shift ;;
-    --owner)      [ $# -ge 2 ] || die "--owner needs a value"; OWNER="$2"; shift 2 ;;
+    --owner|--session) [ $# -ge 2 ] || die "$1 needs a value"; OWNER="$2"; shift 2 ;;
     --ttl)        [ $# -ge 2 ] || die "--ttl needs a value"; TTL_OVERRIDE="$2"; shift 2 ;;
     --task-id)    [ $# -ge 2 ] || die "--task-id needs a value"; CLAIM_TASK_ID="$2"; shift 2 ;;
     --branch)     [ $# -ge 2 ] || die "--branch needs a value"; CLAIM_BRANCH="$2"; shift 2 ;;
     --agent)      [ $# -ge 2 ] || die "--agent needs a value"; CLAIM_AGENT="$2"; shift 2 ;;
+    --slot)       [ $# -ge 2 ] || die "--slot needs a slot"; CLAIM_SLOT="$2"; shift 2 ;;
+    --takeover)   TAKEOVER=1; shift ;;
     --config)     [ $# -ge 2 ] || die "--config needs a path"; AGENTWS_CONFIG="$2"; shift 2 ;;
     --root)       [ $# -ge 2 ] || die "--root needs a path"; INIT_ROOT="$2"; shift 2 ;;
     --slots)      [ $# -ge 2 ] || die "--slots needs a number"; INIT_SLOTS="$2"; shift 2 ;;
     --version|-V) SHOW_VERSION=1; shift ;;
     -h|--help)    usage; exit 0 ;;
+    --)           shift; ARGS+=("$@"); break ;;
+    -?*)          PASS_OPTS="${PASS_OPTS:+$PASS_OPTS }$1"; ARGS+=("$1"); shift ;;
     *)            ARGS+=("$1"); shift ;;
   esac
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 [ "${SHOW_VERSION:-0}" -eq 1 ] && set -- version
+
+# Options a subcommand parses itself. Anything else that looks like an option
+# is refused, so a mistyped flag can never become a lock reason or a slot name.
+opts_check() { # opts_check <command>
+  local allowed o
+  set -f
+  case "$1" in
+    update)     allowed="--check" ;;
+    setup)      allowed="--check --remove --refresh" ;;
+    submodules) allowed="--push --base" ;;
+    tend)       allowed="--check --install --uninstall --status --refresh --no-refresh --reap --no-reap --no-fix-env --self-update --no-self-update" ;;
+    *)          allowed="" ;;
+  esac
+  for o in ${PASS_OPTS:-}; do
+    case " $allowed " in *" $o "*) continue ;; esac
+    opts_refuse "$1" "unknown option '$o' for $1 (try --help; put -- before an argument that starts with a dash)"
+  done
+  set +f
+  [ -z "$CLAIM_SLOT" ] || [ "$1" = claim ] || opts_refuse "$1" "--slot applies only to claim"
+  [ "$TAKEOVER" -eq 0 ] || [ "$1" = lock ] || opts_refuse "$1" "--takeover applies only to lock"
+}
+
+opts_refuse() { # opts_refuse <command> <message>: exit 2 (EUSAGE)
+  [ "$JSON" -eq 1 ] && envelope_err "$1" EUSAGE "$2"
+  printf 'agentws: %s\n' "$2" >&2
+  exit 2
+}
 
 NO_BACKGROUND_UPDATE=0
 for ARG in "$@"; do
@@ -173,11 +213,19 @@ case "${1:-}" in update|tend) NO_BACKGROUND_UPDATE=1 ;; esac
 case "${1:-}" in
   init|use|setup|update|version|hook)
     CMD="$1"; shift
+    opts_check "$CMD"
     case "$CMD" in
       hook) cmd_hook "$@" ;;
       *)    envelope_run "$CMD" "cmd_$CMD" "$@" ;;
     esac
     exit $? ;;
+esac
+
+# Provider commands parse their own options; core ones are checked before the
+# config is read, so a bad flag is reported even when the config is missing.
+case "${1:-status}" in
+  status|free|claim|sync|prune|refresh|recycle|done|reap|create|destroy|doctor|tend|submodules|locks|config|lock|unlock|help)
+    opts_check "${1:-status}" ;;
 esac
 
 config_load

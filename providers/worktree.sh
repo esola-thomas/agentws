@@ -154,6 +154,17 @@ provider_slot_doctor() { # <slot> <abs-path>
   common="$(git -C "$d" rev-parse --git-common-dir 2>/dev/null || true)"
   if [ -n "$common" ]; then
     printf 'OK common-dir %s\n' "$common"
+    # The admin dir's back-link must reach this checkout, or the next
+    # `git worktree prune` from the reference deletes the admin dir.
+    admin="$(_wt_gitdir "$d")" || admin=""
+    if [ -n "$admin" ] && [ -f "$admin/gitdir" ]; then
+      IFS= read -r common < "$admin/gitdir" || common=""
+      if [ -n "$common" ] && [ ! -e "$common" ]; then
+        printf 'FAIL worktree-link %s/gitdir points at %s, which does not exist; the next worktree prune would orphan this slot. Fix: git -C %s worktree repair %s\n' \
+          "$admin" "$common" "$(_wt_source)" "$d"
+        bad=1
+      fi
+    fi
   else
     admin="$(_wt_gitdir "$d")" || admin=""
     if [ -n "$admin" ] && [ ! -e "$admin" ]; then

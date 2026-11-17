@@ -233,6 +233,7 @@ lock_warn_no_liveness() {
 cmd_lock() (
   [ $# -ge 1 ] || die "lock needs a slot, e.g. agentws lock 1 \"fp migration\""
   local slot="$1"; shift
+  local has_reason=0; [ $# -eq 0 ] || has_reason=1
   local reason; reason="$(lock_sanitize "${*:-unspecified}")"
   local f; f="$(lock_file "$slot")"
   provider_slot_exists "$slot" || die "$(slot_name "$slot") does not exist"
@@ -251,6 +252,9 @@ cmd_lock() (
     if lock_format_unsupported "$slot"; then
       printf '%s %s\n' "$(c_red REFUSE)" "$(lock_format_refusal "$slot")"
       return 9
+    elif [ "${TAKEOVER:-0}" -eq 1 ] && lock_mine "$slot"; then
+      lock_rebind "$slot" "$has_reason" "$reason"
+      return
     elif lock_is_stale "$slot"; then
       printf '%s stale lock from %s (%sh old), taking over\n' \
         "$(c_yel NOTE)" "$(lock_read "$slot" owner)" "$(lock_age_hours "$slot")"
@@ -261,6 +265,8 @@ cmd_lock() (
     else
       printf '%s %s is held by %s: %s\n' "$(c_red BUSY)" "$(slot_name "$slot")" \
         "$(lock_read "$slot" owner)" "$(lock_read "$slot" reason)"
+      [ "${TAKEOVER:-0}" -eq 0 ] || \
+        printf '   --takeover only re-binds a lock whose owner is %s\n' "$OWNER"
       return 1
     fi
   fi
@@ -278,20 +284,9 @@ cmd_lock() (
   # AGENTWS_PID (or legacy WSCTL_PID); without it the lock falls back to TTL
   # expiry, because the agentws process itself exits immediately and must never
   # be used as a liveness proxy.
-  local opid ostart extra claim_ttl
-  opid="${AGENTWS_PID:-${WSCTL_PID:-}}"
-  extra=""
-  if [ -n "$opid" ] && [[ "$opid" =~ ^[0-9]+$ ]] && [ -e "$AGENTWS_PROC/$opid" ]; then
-    ostart="$(awk '{print $22}' "$AGENTWS_PROC/$opid/stat" 2>/dev/null || true)"
-    extra="$(printf 'owner_pid=%s\nowner_start=%s' "$opid" "$ostart")"
-  fi
-  claim_ttl="$(lock_claim_ttl_hours)"
-
-  if ( set -o noclobber; printf 'format=%s\nowner=%s\nreason=%s\ntask_id=%s\nbranch=%s\nagent=%s\nepoch=%s\nstamp=%s\nhost=%s\npid=%s\nttl=%s\n%s\n' \
-        "$AGENTWS_LOCK_FORMAT" "$(lock_sanitize "$OWNER")" "$reason" \
-        "$(lock_sanitize "${CLAIM_TASK_ID:-}")" "$(lock_sanitize "${CLAIM_BRANCH:-}")" \
-        "$(lock_sanitize "${CLAIM_AGENT:-}")" "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S')" \
-        "$(hostname -s 2>/dev/null)" "$$" "$claim_ttl" "$extra" > "$f" ) 2>/dev/null; then
+  local record
+  record="$(lock_record "$reason" "${CLAIM_TASK_ID:-}" "${CLAIM_BRANCH:-}" "${CLAIM_AGENT:-}")"
+  if ( set -o noclobber; printf '%s\n' "$record" > "$f" ) 2>/dev/null; then
     printf '%s locked %s as %s\n' "$(c_grn OK)" "$(slot_name "$slot")" "$OWNER"
     printf '   reason: %s\n' "$reason"
   else
@@ -300,6 +295,44 @@ cmd_lock() (
     return 1
   fi
 )
+
+# One lock record on stdout, for the current OWNER, AGENTWS_PID, and TTL.
+lock_record() { # lock_record <reason> <task_id> <branch> <agent>
+  local opid ostart extra=""
+  opid="${AGENTWS_PID:-${WSCTL_PID:-}}"
+  if [ -n "$opid" ] && [[ "$opid" =~ ^[0-9]+$ ]] && [ -e "$AGENTWS_PROC/$opid" ]; then
+    ostart="$(awk '{print $22}' "$AGENTWS_PROC/$opid/stat" 2>/dev/null || true)"
+    extra="$(printf 'owner_pid=%s\nowner_start=%s' "$opid" "$ostart")"
+  fi
+  printf 'format=%s\nowner=%s\nreason=%s\ntask_id=%s\nbranch=%s\nagent=%s\nepoch=%s\nstamp=%s\nhost=%s\npid=%s\nttl=%s\n%s\n' \
+    "$AGENTWS_LOCK_FORMAT" "$(lock_sanitize "$OWNER")" "$1" \
+    "$(lock_sanitize "$2")" "$(lock_sanitize "$3")" "$(lock_sanitize "$4")" \
+    "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S')" \
+    "$(hostname -s 2>/dev/null)" "$$" "$(lock_claim_ttl_hours)" "$extra"
+}
+
+# Re-bind a lock this owner holds to the current session pid, and optionally a
+# new reason, in one rename. Runs inside cmd_lock's acquisition mutex, so no
+# claim can interleave. Task metadata not given again is kept.
+lock_rebind() { # lock_rebind <slot> <has_reason 0|1> <reason>
+  local slot="$1" f tmp reason="$3" task branch agent
+  f="$(lock_file "$slot")"
+  [ "$2" -eq 1 ] || reason="$(lock_read "$slot" reason)"
+  task="${CLAIM_TASK_ID:-$(lock_read "$slot" task_id)}"
+  branch="${CLAIM_BRANCH:-$(lock_read "$slot" branch)}"
+  agent="${CLAIM_AGENT:-$(lock_read "$slot" agent)}"
+  if [ "${DRY:-0}" -eq 1 ]; then
+    printf '  [dry-run] would re-bind %s to pid %s\n' "$(slot_name "$slot")" "${AGENTWS_PID:-${WSCTL_PID:-none}}"
+    return 0
+  fi
+  tmp="$f.rebind.$$"
+  lock_record "$reason" "$task" "$branch" "$agent" > "$tmp" && mv -f "$tmp" "$f" || {
+    rm -f "$tmp"; printf '%s could not rewrite the lock for %s\n' "$(c_red FAIL)" "$(slot_name "$slot")"; return 1
+  }
+  printf '%s re-bound %s as %s, pid %s\n' "$(c_grn OK)" "$(slot_name "$slot")" "$OWNER" \
+    "$(lock_read "$slot" owner_pid 2>/dev/null || true)"
+  printf '   reason: %s\n' "$reason"
+}
 
 cmd_unlock() {
   [ $# -ge 1 ] || die "unlock needs a slot"

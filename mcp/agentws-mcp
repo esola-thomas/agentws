@@ -213,7 +213,7 @@ tools_json() {
    "required":["session"]}},
 
  {"name":"workspace_claim",
-  "description":"Lock the first free workspace slot, preferring environment-ready slots, and return its path, environment state, and bootstrap hint.",
+  "description":"Lock the first free workspace slot, preferring environment-ready slots, and return its path, environment state, and bootstrap hint. With slot, claim only that slot, with the same refusals.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session."},
     "reason":{"type":"string","description":"Short free text describing the task, shown to other agents."},
@@ -222,7 +222,8 @@ tools_json() {
     "task_id":{"type":"string","description":"Optional structured task or issue identifier."},
     "branch":{"type":"string","description":"Optional task branch name."},
     "agent":{"type":"string","description":"Optional agent model or tier."},
-    "require_env":{"type":"boolean","description":"Refuse instead of falling back to a missing or stale environment."}},
+    "require_env":{"type":"boolean","description":"Refuse instead of falling back to a missing or stale environment."},
+    "slot":{"type":"string","description":"Optional slot id or workspace name. Claims only that slot; a busy or unclaimable slot is refused, never substituted."}},
    "required":["session","reason"]}},
 
  {"name":"workspace_lock",
@@ -235,7 +236,8 @@ tools_json() {
     "ttl":{"type":"integer","minimum":1,"description":"Optional lock lifetime in hours."},
     "task_id":{"type":"string"},
     "branch":{"type":"string"},
-    "agent":{"type":"string"}},
+    "agent":{"type":"string"},
+    "takeover":{"type":"boolean","description":"Re-bind a lock this same session already holds to session_pid and reason, for example after a restart. Never takes another session's lock."}},
    "required":["session","slot","reason"]}},
 
  {"name":"workspace_release",
@@ -281,7 +283,7 @@ tools_json() {
    "required":["session","slot"]}},
 
  {"name":"workspace_recycle",
-  "description":"Park a finished slot detached at the remote default branch, delete its task branch, optionally remove reported untracked files, and release this session's lock. Refuses another session's lock.",
+  "description":"Park a finished slot detached at the remote default branch, delete its task branch, optionally remove reported untracked files, and release this session's lock. Refuses another session's live lock; a stale one is taken over only when the branch is merged or gone, the tree is clean, and nothing is unpushed.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string"},"slot":{"type":"string"},
     "branch":{"type":"string","description":"Optional local task branch to delete. Defaults to the branch currently checked out."},
@@ -335,7 +337,7 @@ lock_owner_of() { # lock_owner_of <owner> <slot>
 
 tool_call() { # tool_call <name> <arguments-json>
   local name="$1" args="$2" sess spid slot reason owner held ttl task_id branch agent
-  local require_env fix_env with_env clean_untracked confirm
+  local require_env fix_env with_env clean_untracked confirm takeover
   local -a call_args
   TOOL_ERR=0; TOOL_OUT=""
 
@@ -360,6 +362,7 @@ tool_call() { # tool_call <name> <arguments-json>
   with_env="$(printf '%s' "$args" | jq -r '.with_env // false')"
   clean_untracked="$(printf '%s' "$args" | jq -r '.clean_untracked // false')"
   confirm="$(printf '%s' "$args" | jq -r '.confirm // false')"
+  takeover="$(printf '%s' "$args" | jq -r '.takeover // false')"
 
   case "$name" in
     workspace_status)
@@ -375,7 +378,8 @@ tool_call() { # tool_call <name> <arguments-json>
       [ -n "$branch" ] && call_args+=(--branch "$branch")
       [ -n "$agent" ] && call_args+=(--agent "$agent")
       [ "$require_env" = "true" ] && call_args+=(--require-env)
-      call_args+=("$reason")
+      [ -n "$slot" ] && call_args+=(--slot "$slot")
+      call_args+=(-- "$reason")
       ws_call "$owner" "$spid" "${call_args[@]+"${call_args[@]}"}" || true
       if ! env_failed "$WS_OUT"; then
         held_add "$sess" "$(printf '%s' "$WS_OUT" | jq -r '.data.slot // empty')" "$owner"
@@ -390,7 +394,8 @@ tool_call() { # tool_call <name> <arguments-json>
       [ -n "$task_id" ] && call_args+=(--task-id "$task_id")
       [ -n "$branch" ] && call_args+=(--branch "$branch")
       [ -n "$agent" ] && call_args+=(--agent "$agent")
-      call_args+=("$slot" "$reason")
+      [ "$takeover" = "true" ] && call_args+=(--takeover)
+      call_args+=(-- "$slot" "$reason")
       ws_call "$owner" "$spid" "${call_args[@]+"${call_args[@]}"}" || true
       if ! env_failed "$WS_OUT"; then
         held_add "$sess" "$(printf '%s' "$WS_OUT" | jq -r '.data.slot // empty')" "$owner"
@@ -414,12 +419,12 @@ tool_call() { # tool_call <name> <arguments-json>
                    owner:$o}}')"
         return 0
       fi
-      ws_call "$owner" "" unlock --json "$slot" || true
+      ws_call "$owner" "" unlock --json -- "$slot" || true
       if ! env_failed "$WS_OUT"; then held_drop "$sess" "$slot"; fi ;;
 
     workspace_sync)
       if [ -n "$slot" ]; then
-        ws_call "$owner" "" sync --json "$slot" || true
+        ws_call "$owner" "" sync --json -- "$slot" || true
       else
         ws_call "$owner" "" sync --json || true
       fi ;;
@@ -427,12 +432,12 @@ tool_call() { # tool_call <name> <arguments-json>
     workspace_doctor)
       call_args=(doctor --json)
       [ "$fix_env" = "true" ] && call_args+=(--fix-env)
-      [ -n "$slot" ] && call_args+=("$slot")
+      [ -n "$slot" ] && call_args+=(-- "$slot")
       ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
 
     workspace_refresh)
       if [ -n "$slot" ]; then
-        ws_call "$owner" "" refresh --json "$slot" || true
+        ws_call "$owner" "" refresh --json -- "$slot" || true
       else
         ws_call "$owner" "" refresh --json || true
       fi ;;
@@ -440,14 +445,14 @@ tool_call() { # tool_call <name> <arguments-json>
     workspace_prune)
       call_args=(prune --json)
       [ "$confirm" = "true" ] && call_args+=(--yes)
-      [ -n "$slot" ] && call_args+=("$slot")
+      [ -n "$slot" ] && call_args+=(-- "$slot")
       ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
 
     workspace_create)
       if [ -z "$slot" ]; then fail_tool "$name" EUSAGE "slot is required"; return 0; fi
       call_args=(create --json)
       [ "$with_env" = "true" ] && call_args+=(--with-env)
-      call_args+=("$slot")
+      call_args+=(-- "$slot")
       ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true ;;
 
     workspace_reap)
@@ -457,7 +462,11 @@ tool_call() { # tool_call <name> <arguments-json>
 
     workspace_recycle|workspace_done)
       if [ -z "$slot" ]; then fail_tool "$name" EUSAGE "slot is required"; return 0; fi
-      held="$(lock_owner_of "$owner" "$slot")"
+      # A stale lock goes to the CLI, which takes it over only when the slot
+      # provably holds nothing unpublished, and refuses otherwise.
+      ws_call "$owner" "" locks --json || true
+      held="$(printf '%s' "$WS_OUT" | jq -r --arg s "$slot" \
+        '.data.locks[]? | select(.slot==$s or .name==$s) | if .stale then "" else .owner end' 2>/dev/null | head -1)"
       if [ -n "$held" ] && [ "$held" != "$owner" ]; then
         TOOL_ERR=1
         TOOL_OUT="$(jq -cn --arg c "$name" --arg s "$slot" --arg o "$held" --arg me "$owner" \
@@ -471,7 +480,7 @@ tool_call() { # tool_call <name> <arguments-json>
       else call_args=(recycle --json); fi
       [ -n "$branch" ] && call_args+=(--branch "$branch")
       [ "$clean_untracked" = "true" ] && call_args+=(--clean-untracked)
-      call_args+=("$slot")
+      call_args+=(-- "$slot")
       ws_call "$owner" "" "${call_args[@]+"${call_args[@]}"}" || true
       if ! env_failed "$WS_OUT"; then held_drop "$sess" "$slot"; fi ;;
 

@@ -43,12 +43,25 @@ agentws recycle "$AGENTWS_SLOT"              # fetch, park at origin/<default>,
 `agentws done` is the same command as `recycle`. Untracked files block
 recycling; pass `--clean-untracked` only for files you created.
 
+To take one specific slot, `agentws claim --slot N '<task>'` has the same
+refusals and output as `claim`. After your session restarts, re-bind the lock
+you already own instead of unlocking and relocking:
+
+```bash
+export AGENTWS_PID=$$                        # the new long-lived shell
+agentws lock --takeover "$AGENTWS_SLOT"      # same owner only; keeps the reason
+```
+
 ## Refusals are final
 
 - A busy slot, a stale-lock refusal, or a "not claimable" answer is the
   answer. Report it and stop, or claim a different slot. Never retry the same
   claim in a loop, never pass `--force`, never ask a human to force it for you.
   The MCP server has no force parameter by design.
+- Chain anything that needs the lock with `&&`, never `;`. After a refused
+  claim or lock, `agentws lock 3 work; cd ...` carries on in a slot you do not
+  hold. An unknown option is refused with exit 2, never kept as the reason;
+  put `--` before a reason that starts with a dash.
 - Never `git worktree remove`, `rm -rf`, or `git reset --hard` a slot. Slots
   are permanent; `recycle` is the only reset you run, and only on your own.
 - Never `git checkout <default-branch>` inside a slot to "clean up". It puts
@@ -64,6 +77,9 @@ recycling; pass `--clean-untracked` only for files you created.
   else's in-flight task. Leave it.
 - Lock liveness is tied to `AGENTWS_PID`. If you fork a subprocess to do the
   work, the lock still belongs to the shell you exported.
+- A stale lock on a finished slot (branch merged or gone, clean tree, nothing
+  unpushed) is not yours to clean up by hand: `tend` reaps it, and `recycle`
+  takes it over. Any other stale lock stays for a human to review.
 - Submodules left on your branch's commits are not your cleanup. `recycle` and
   `refresh` resync them to the revision they reset to. If one cannot be
   restored, the command fails and keeps your lock instead of handing on a dirty

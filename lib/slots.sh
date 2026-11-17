@@ -339,6 +339,39 @@ slot_reap_state() { # slot_reap_state <slot> -> reap|dirty|broken|none
   fi
 }
 
+# PREDICATE: returning this slot to service loses nothing. All must hold: the
+# branch is merged into or gone from origin, the tree has no tracked or
+# untracked change, and every commit on HEAD is on an origin ref or its content
+# is already in origin/<default> (a squash merge). Prints merged|gone on
+# success, else why not. The caller decides about the lock.
+slot_finished_safe() { # slot_finished_safe <slot>
+  local s="$1" d why base files f
+  d="$(provider_slot_path "$s")"
+  [ "$(slot_role "$s")" = "work" ] || { printf 'not a work slot'; return 1; }
+  why="$(slot_merged_gone "$s")" || { printf 'branch %s is neither merged nor gone' "$(slot_branch "$s")"; return 1; }
+  [ "$(slot_dirty_count "$s")" = "0" ] || { printf 'tree has uncommitted or untracked changes'; return 1; }
+  if [ -z "$(git -C "$d" rev-list -n 1 HEAD --not --remotes=origin 2>/dev/null)" ]; then
+    printf '%s' "$why"; return 0
+  fi
+  # Commits only this slot has. Safe only if origin/<default> already carries
+  # every file the branch changed, byte for byte.
+  base="$(git -C "$d" merge-base HEAD "origin/$AGENTWS_DEFAULT_BRANCH" 2>/dev/null)" \
+    || { printf 'unpushed commits'; return 1; }
+  files="$(git -C "$d" -c core.quotePath=false diff --name-only --no-renames "$base" HEAD 2>/dev/null)" \
+    || { printf 'unpushed commits'; return 1; }
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in '"'*) printf 'unpushed commits'; return 1 ;; esac
+    if [ "$(git -C "$d" rev-parse -q --verify "HEAD:$f" 2>/dev/null)" != \
+         "$(git -C "$d" rev-parse -q --verify "origin/$AGENTWS_DEFAULT_BRANCH:$f" 2>/dev/null)" ]; then
+      printf 'unpushed commits'; return 1
+    fi
+  done <<EOF
+$files
+EOF
+  printf '%s' "$why"
+}
+
 # Names of the slots reap would recycle, space-separated.
 slot_reapable_names() {
   local s out=""

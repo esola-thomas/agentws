@@ -152,3 +152,16 @@ busy_envelope() {
   mcp_send '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace_recycle","arguments":{"session":"s1","slot":"1"}}}' >/dev/null
   [ "$(grep -c 'recycle' "$STUB_DIR/calls")" -eq 1 ]
 }
+
+@test "workspace_claim forwards slot, and free text always follows --" {
+  write_stub 0 '{"ok":true,"command":"claim","data":{"slot":"2"},"error":null}'
+  mcp_send '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace_claim","arguments":{"session":"s1","reason":"-x fix","slot":"2"}}}' >/dev/null
+  grep -q -- 'claim --json --slot 2 -- -x fix' "$STUB_DIR/calls"
+}
+
+@test "workspace_lock forwards takeover, which is never --force" {
+  write_stub 0 '{"ok":true,"command":"lock","data":{"slot":"1"},"error":null}'
+  mcp_send '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace_lock","arguments":{"session":"s1","slot":"1","reason":"resumed","takeover":true}}}' >/dev/null
+  grep -q -- 'lock --json --takeover -- 1 resumed' "$STUB_DIR/calls"
+  ! grep -q -- '--force' "$STUB_DIR/calls"
+}
