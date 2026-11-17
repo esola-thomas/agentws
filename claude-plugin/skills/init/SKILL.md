@@ -24,12 +24,12 @@ git -C "<repo>" remote
 git -C "<repo>" symbolic-ref --quiet --short refs/remotes/origin/HEAD
 ```
 
-Do not print or expose remote URLs, since they can contain credentials. If the
-repository has no `origin` remote or `origin/<default-branch>` reference, explain
-that worktree slots need that reference and ask the developer how they want to
-make it available. Respect the Git transport already configured for the repo.
-For SSH, HTTPS, a corporate proxy, or a custom Git transport, ask the developer
-to configure and verify access themselves; never request or store tokens.
+Do not print or expose remote URLs, since they can contain private access
+details. If the repository has no `origin` remote or `origin/<default-branch>`
+reference, explain that worktree slots need that reference and ask the developer
+how they want to make it available. Respect the Git transport already configured
+for the repo. For SSH, HTTPS, a corporate proxy, or a custom Git transport, ask
+the developer to configure and verify access themselves.
 
 Check whether `agentws` is installed and whether this repository already has an
 `.agentws.yml` or an existing farm. Do not overwrite an existing config or use
@@ -59,10 +59,10 @@ Ask which provider fits the project:
   developer's approval. Explain that providers may not access the lock
   directory.
 
-For nonstandard Git transport or authentication, keep the source URL and
-credentials out of chat and command output. Prefer the existing local checkout
-as the source for `worktree`; for `fullclone`, use a credential helper or a
-developer-configured remote rather than embedding credentials in the config.
+For nonstandard Git transport, keep the source URL out of chat and command
+output. Prefer the existing local checkout as the source for `worktree`; for
+`fullclone`, use a developer-configured remote rather than embedding access
+details in the config.
 
 ## 3. Review and create the farm
 
@@ -85,7 +85,7 @@ submodules initialized. Ask whether to initialize them, including nested
 submodules. Only after approval, run `git -C "<slot-path>"
 submodule update --init --recursive` for each created slot. If a submodule
 cannot be fetched, preserve the slot and report the failing path; do not change
-its URL, branch, or credentials without permission.
+its URL, branch, or access configuration without permission.
 
 ## 5. Verify and hand off
 

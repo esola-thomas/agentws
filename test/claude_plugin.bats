@@ -53,6 +53,8 @@ load helper
   grep -q 'Do not run a remote installer' "$skills/init/SKILL.md"
   run grep -RniE '(curl|wget)[^|]*[|][[:space:]]*(bash|sh)' "$skills"
   [ "$status" -ne 0 ]
+  run grep -RniE '(^|[;&|[:space:]])eval[[:space:]]|bootstrap_hint' "$skills"
+  [ "$status" -ne 0 ]
 }
 
 # Software Directory Policy 1C, 2E, 2F: the plugin's skills may not tell Claude

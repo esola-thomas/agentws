@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-11-17
+
 ### Added
 
 - `claim --slot N` claims one specific slot with claim's refusals and output;
@@ -69,6 +71,11 @@ All notable changes to this project are recorded here. Format follows
   `workspace_recycle` passes stale locks to it instead of refusing them.
 - When `recycle` cannot delete the task branch because another checkout has it,
   it names that checkout (and its slot) and the command that frees it.
+- The Claude plugin skill reads claim details from JSON instead of evaluating
+  generated shell output or running a provider-supplied bootstrap hint.
+- The plugin documentation clarifies that Git handles remote authentication
+  locally and the separately installed MCP server omits provider environment
+  values, bootstrap hints, and notices from claim responses.
 
 ## [0.0.7] - 2026-11-13
 

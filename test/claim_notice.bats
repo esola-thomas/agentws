@@ -14,8 +14,10 @@ provider_claim_env() {
   printf 'export DB_NAME=%s\n' "db_$1"
   printf 'export QUOTED=%s\n' "$(sq "it's \$HOME")"
   printf 'export PLAIN="two words"\n'
+  printf 'export PRIVATE_VALUE=provider-sentinel\n'
   printf 'not an export\n'
 }
+provider_bootstrap_hint() { printf 'echo bootstrap-sentinel'; }
 provider_claim_notice() {
   [ "${NOTICE_FAIL:-0}" -eq 0 ] || { printf 'half a line\n'; return 5; }
   printf 'Test DB: test_%s. Never edit shared config.\n' "$1"
@@ -70,7 +72,7 @@ notice_file() { printf '%s/%s.notice' "$LOCKS" "$1"; }
   [ "$status" -eq 0 ]
   [ "$(last_json | jq -r '.data.label')" = proj_1 ]
   last_json | jq -r '.data.notice' | grep -q 'you hold slot 1 (proj_1)'
-  [ "$(last_json | jq -c '.data.claim_env')" = '{"DB_NAME":"db_1","QUOTED":"it'"'"'s $HOME","PLAIN":"two words"}' ]
+  [ "$(last_json | jq -c '.data.claim_env')" = '{"DB_NAME":"db_1","QUOTED":"it'"'"'s $HOME","PLAIN":"two words","PRIVATE_VALUE":"provider-sentinel"}' ]
   [ "$(last_json | jq -c '.data.claim_warnings')" = '[]' ]
   run agentws status --json
   [ "$(last_json | jq -r '.data.slots[2].label')" = proj_lab ]
@@ -139,13 +141,18 @@ notice_file() { printf '%s/%s.notice' "$LOCKS" "$1"; }
   [ ! -e "$(notice_file 2)" ]
 }
 
-@test "MCP workspace_claim returns the label, notice, and claim_env" {
+@test "MCP workspace_claim omits provider environment values" {
   local mcp="$AGENTWS_REPO_ROOT/mcp/agentws-mcp" out
   out="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace_claim","arguments":{"session":"s1","reason":"work"}}}' \
     | "$mcp" 2>/dev/null | sed -e 's/^Content-Length:[^{]*//' | jq -r '.result.content[0].text')"
   [ "$(printf '%s' "$out" | jq -r '.data.label')" = proj_1 ]
-  [ "$(printf '%s' "$out" | jq -r '.data.claim_env.DB_NAME')" = db_1 ]
-  printf '%s' "$out" | jq -r '.data.notice' | grep -q 'Test DB: test_1'
+  [ "$(printf '%s' "$out" | jq -r '.data | has("claim_env")')" = false ]
+  [ "$(printf '%s' "$out" | jq -r '.data | has("bootstrap_hint")')" = false ]
+  [ "$(printf '%s' "$out" | jq -r '.data | has("notice")')" = false ]
+  [[ "$out" != *"db_1"* ]]
+  [[ "$out" != *"provider-sentinel"* ]]
+  [[ "$out" != *"bootstrap-sentinel"* ]]
+  [[ "$out" != *"Test DB: test_1"* ]]
   [ "$(wc -l < "$CLAIM_LOG" | tr -d ' ')" -eq 1 ]
 }
 

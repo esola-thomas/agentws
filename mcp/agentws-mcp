@@ -213,7 +213,7 @@ tools_json() {
    "required":["session"]}},
 
  {"name":"workspace_claim",
-  "description":"Lock the first free workspace slot, preferring environment-ready slots, and return its path, environment state, bootstrap hint, label (suffix for databases, containers, and temp dirs you create outside the checkout), notice, and claim_env. With slot, claim only that slot, with the same refusals.",
+  "description":"Lock the first free workspace slot, preferring environment-ready slots, and return its path, environment state, and label (suffix for databases, containers, and temp dirs you create outside the checkout). Provider environment values, bootstrap hints, and notices are not returned. With slot, claim only that slot, with the same refusals.",
   "inputSchema":{"type":"object","properties":{
     "session":{"type":"string","description":"Stable identifier for this agent session."},
     "reason":{"type":"string","description":"Short free text describing the task, shown to other agents."},
@@ -533,6 +533,9 @@ tool_call() { # tool_call <name> <arguments-json>
     return 0
   fi
   TOOL_OUT="$WS_OUT"
+  if [ "$name" = workspace_claim ]; then
+    TOOL_OUT="$(printf '%s' "$TOOL_OUT" | jq 'del(.data.claim_env, .data.bootstrap_hint, .data.notice)')"
+  fi
   env_failed "$TOOL_OUT" && TOOL_ERR=1
   return 0
 }
@@ -564,7 +567,7 @@ handle() { # handle <message>
         --arg pv "$pv" --arg n "$SERVER_NAME" --arg v "$SERVER_VERSION" \
         '{protocolVersion:$pv,capabilities:{tools:{listChanged:false}},
           serverInfo:{name:$n,version:$v},
-          instructions:"agentws hands each agent its own isolated git checkout (a slot). Any task needing a checkout of the farmed repo goes through a slot: workspace_status to see free ones, workspace_claim to take one (the result carries path and bootstrap_hint: run the hint in the slot before any build or test), then inside the slot branch off origin/<base> immediately and never commit on the default branch, and workspace_recycle after the PR merges (or workspace_release to abandon). Never create ad-hoc worktrees or clones of a farmed repo, never edit a slot you do not hold, never git worktree remove, rm -rf, or reset --hard a slot. Pass the same session string on every call. A busy or stale-lock refusal is final: report it or claim another slot; never retry it and never ask a human to force it on your behalf. Idle slots are parked detached at origin/<default>. phantom-dirty on an idle slot left on the default branch is shared-ref drift, healed by workspace_refresh, not uncommitted work."}')"
+          instructions:"agentws hands each agent its own isolated git checkout (a slot). Any task needing a checkout of the farmed repo goes through a slot: workspace_status to see free ones, workspace_claim to take one, then inside the slot review project setup docs before any build or test, branch off origin/<base> immediately and never commit on the default branch, and workspace_recycle after the PR merges (or workspace_release to abandon). Never create ad-hoc worktrees or clones of a farmed repo, never edit a slot you do not hold, never git worktree remove, rm -rf, or reset --hard a slot. Pass the same session string on every call. A busy or stale-lock refusal is final: report it or claim another slot; never retry it and never ask a human to force it on your behalf. Idle slots are parked detached at origin/<default>. phantom-dirty on an idle slot left on the default branch is shared-ref drift, healed by workspace_refresh, not uncommitted work."}')"
       ;;
     tools/list)
       reply_result "$id" "$(jq -cn --argjson t "$(tools_json)" '{tools:$t}')"
