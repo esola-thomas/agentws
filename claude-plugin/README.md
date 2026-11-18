@@ -47,11 +47,12 @@ sessions inside a slot. Those come from the CLI, not from this plugin.
   the `init` skill points you to the project README; installation is left to
   you. Once installed, the CLI checks `github.com/esola-thomas/agentws` for a
   new release at most once a day; `AGENTWS_NO_AUTO_UPDATE=1` turns that off.
-- **Sends.** Nothing goes to the plugin author or to any service the plugin
-  operates, because there is none. The only network traffic is git: fetches
-  from and pushes to the remotes already configured in your own repository,
-  using your existing git credentials. The plugin never asks for, reads, or
-  stores tokens.
+- **Sends.** The plugin itself sends nothing. When you use its skills, local
+  `agentws` commands may check GitHub for updates, and Git commands use the
+  remotes configured for your repository. Git handles authentication through
+  its local configuration; the plugin does not access authentication data. The
+  separately installed MCP server omits provider environment values, bootstrap
+  hints, and notices from claim results.
 - **Stores.** Lock files (owner label, process id, task description) and farm
   config stay on your local disk. No telemetry, no account, no analytics.
 

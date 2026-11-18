@@ -24,8 +24,14 @@ anything from this skill. Do not run a remote installer from this skill.
 ```bash
 export AGENTWS_PID=$$ AGENTWS_OWNER="<harness>:<task>"   # e.g. claude:fix-parser
 agentws free                                   # or MCP workspace_status
-eval "$(agentws claim '<task>' --print-env)"   # AGENTWS_SLOT, AGENTWS_WS, WS
-agentws claim '<task>' --json | jq -r .data.bootstrap_hint   # run it in the slot
+claim="$(agentws claim '<task>' --json)" &&
+AGENTWS_SLOT="$(printf '%s\n' "$claim" | jq -r '.data.slot')" &&
+AGENTWS_WS="$(printf '%s\n' "$claim" | jq -r '.data.path')" &&
+AGENTWS_LABEL="$(printf '%s\n' "$claim" | jq -r '.data.label')" &&
+export AGENTWS_SLOT AGENTWS_WS AGENTWS_LABEL &&
+WS="$AGENTWS_WS" &&
+export WS &&
+cd "$AGENTWS_WS"
 ```
 
 Prefer the MCP tools (`workspace_claim`, `workspace_status`, `workspace_recycle`)
@@ -49,9 +55,9 @@ disk in the slot, so a stopped worker can be resumed in the same directory.
 
 ## Inside the slot (everyone)
 
-1. **Bootstrap before the first gate.** Run the bootstrap hint or the
-   project's setup doc (`uv sync`, `npm ci`, the project's setup script,
-   submodule init). A first gate that fails on missing tooling is not a code problem.
+1. **Bootstrap before the first gate.** Review the project's setup docs and
+   get the developer's approval before running setup commands. A first gate
+   that fails on missing tooling is not a code problem.
 2. **Label shared resources.** The claim notice (stderr of `claim`, or the
    session-start hook inside a locked slot) names the slot's label, for
    example `myrepo_3` (`AGENTWS_LABEL`). Suffix every database, container,
